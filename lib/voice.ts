@@ -15,6 +15,18 @@ export const VOICE_RATE_KEY = "pi-voice-rate";
 export const VOICE_INPUT_LOCALE_KEY = "pi-voice-input-locale";
 export const VOICE_OUTPUT_VOICE_KEY = "pi-voice-output-voice";
 export const VOICE_HANDS_FREE_KEY = "pi-voice-hands-free";
+export const VOICE_NEURAL_KEY = "pi-voice-neural";
+
+/**
+ * Microsoft Edge neural voices (free via the Edge Read Aloud API), picked per
+ * speech-recognition locale. Much more natural than system speechSynthesis
+ * voices, especially for Chinese.
+ */
+export const EDGE_TTS_VOICES: Record<VoiceLocale, string> = {
+  "zh-CN": "zh-CN-XiaoxiaoNeural",
+  "zh-TW": "zh-TW-HsiaoChenNeural",
+  "en-US": "en-US-AvaNeural",
+};
 
 /** Silence length (ms) after which hands-free dictation auto-sends. */
 export const VOICE_HANDS_FREE_SILENCE_MS = 1100;
@@ -229,6 +241,53 @@ export function detectSpeechLocale(text: string, fallback: VoiceLocale = "zh-CN"
  * short utterances instead of one huge one. Splits on sentence boundaries,
  * then on whitespace, then hard-cuts as a last resort.
  */
+/**
+ * Return the longest prefix of `text` that ends with a complete sentence
+ * boundary (。！？…；\n, or .!? followed by whitespace/Chinese), or null while no
+ * complete sentence has accumulated yet. Used to speak a reply sentence by
+ * sentence while the agent is still generating it.
+ */
+export function firstCompleteSentences(text: string, minLength = 8): string | null {
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    let boundary = false;
+    if (ch === "\n" || ch === "。" || ch === "！" || ch === "？" || ch === "…" || ch === "；") {
+      boundary = true;
+    } else if (ch === "." || ch === "!" || ch === "?") {
+      const next = text[i + 1];
+      boundary = next === undefined || next === " " || /[\u4e00-\u9fff]/.test(next);
+    }
+    if (boundary && i + 1 >= minLength) {
+      return text.slice(0, i + 1);
+    }
+  }
+  return null;
+}
+
+/**
+ * Strip everything but letters/digits/Han so a recognition transcript can be
+ * compared against the text currently being spoken (echo detection).
+ */
+export function normalizeForEcho(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/**
+ * Whether a recognition transcript captured while the assistant is speaking
+ * is just the assistant's own voice picked up by the microphone. Compares the
+ * normalized transcript against the normalized spoken text in both directions
+ * so partial transcriptions of either side still match.
+ */
+export function isEchoSpeech(transcript: string, spoken: string): boolean {
+  const t = normalizeForEcho(transcript);
+  const s = normalizeForEcho(spoken);
+  if (!s) return false;
+  // Very short captures during playback are indistinguishable from echo and
+  // are dropped to avoid the assistant interrupting itself.
+  if (t.length < 4) return true;
+  return s.includes(t) || t.includes(s.slice(0, Math.min(s.length, 24)));
+}
+
 export function splitForSpeech(text: string, maxLength = 220): string[] {
   const limit = Math.max(1, Math.floor(maxLength));
   const trimmed = text.trim();

@@ -7,7 +7,7 @@ import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecuti
 import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, isAssistantTruncated, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
-import { extractSpeakableText, type VoiceLocale } from "@/lib/voice";
+import { extractSpeakableText, firstCompleteSentences, type VoiceLocale } from "@/lib/voice";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
 import { buildDropMentions, collectDroppedItems, uploadDroppedItems } from "@/lib/drop-items";
@@ -79,6 +79,14 @@ interface Props {
   /** Turns auto-speak on/off, owned by AppShell so Settings stays in sync. */
   onVoiceOutputAutoSpeakToggle?: (next: boolean) => void;
   speakAssistantReply?: (text: string) => void;
+  /** Neural (Edge TTS) mode: enables sentence-by-sentence streaming speech. */
+  voiceOutputNeural?: boolean;
+  /** Appends text to the speech queue while the agent is still generating. */
+  enqueueAssistantSpeech?: (text: string) => void;
+  /** Enqueues the final remainder and closes the queue. */
+  finishAssistantSpeech?: (remainder: string) => void;
+  /** Text currently/recently spoken — used to filter microphone echo. */
+  getCurrentSpeechText?: () => string;
   voiceInputLocale?: VoiceLocale;
   onVoiceInputLocaleChange?: (locale: VoiceLocale) => void;
 }
@@ -315,7 +323,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
   );
 }
 
-export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, voiceOutputEnabled = false, voiceOutputAutoSpeak = true, voiceOutputSupported, voiceOutputSpeaking, onVoiceOutputToggle, onVoiceOutputStop, onVoiceOutputAutoSpeakToggle, speakAssistantReply, voiceInputLocale, onVoiceInputLocaleChange }: Props) {
+export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, voiceOutputEnabled = false, voiceOutputAutoSpeak = true, voiceOutputSupported, voiceOutputSpeaking, onVoiceOutputToggle, onVoiceOutputStop, onVoiceOutputAutoSpeakToggle, speakAssistantReply, voiceOutputNeural, enqueueAssistantSpeech, finishAssistantSpeech, getCurrentSpeechText, voiceInputLocale, onVoiceInputLocaleChange }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const completionNotificationsEnabled = session?.relation?.kind !== "subagent";
@@ -336,6 +344,14 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   voiceOutputAutoSpeakRef.current = voiceOutputAutoSpeak;
   const speakAssistantReplyRef = useRef(speakAssistantReply);
   speakAssistantReplyRef.current = speakAssistantReply;
+  const voiceOutputNeuralRef = useRef(voiceOutputNeural);
+  voiceOutputNeuralRef.current = voiceOutputNeural;
+  const enqueueAssistantSpeechRef = useRef(enqueueAssistantSpeech);
+  enqueueAssistantSpeechRef.current = enqueueAssistantSpeech;
+  const finishAssistantSpeechRef = useRef(finishAssistantSpeech);
+  finishAssistantSpeechRef.current = finishAssistantSpeech;
+  const getCurrentSpeechTextRef = useRef(getCurrentSpeechText);
+  getCurrentSpeechTextRef.current = getCurrentSpeechText;
   const messagesRef = useRef<AgentMessage[]>([]);
   // Filled in below once speakLatestReply exists; the wrapper above must stay
   // referentially stable for useAgentSession, so it reads through a ref.
@@ -345,9 +361,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     if (completionNotificationsEnabled && soundEnabledRef.current) {
       playDoneSoundRef.current();
     }
-    if (completionNotificationsEnabled && voiceOutputEnabledRef.current && voiceOutputAutoSpeakRef.current) {
-      speakLatestReplyRef.current?.();
-    }
+    // Auto-speak is handled by the effect below, which runs after the final
+    // messages have been committed: calling speakLatestReply here raced the
+    // render and read the previous reply instead of the fresh one.
     onAgentEnd?.();
   }, [completionNotificationsEnabled, onAgentEnd]);
 
@@ -406,6 +422,78 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     }
   }, []);
   speakLatestReplyRef.current = speakLatestReply;
+  // Auto-speak: once a run ends, read the newest assistant reply aloud. Runs
+  // as an effect (after commit) so it always sees the finished message; the
+  // pending flag bridges the case where messages land a render after
+  // agentRunning flips false.
+  const prevAgentRunningRef = useRef(false);
+  const speakPendingRef = useRef(false);
+  const lastSpokenAssistantRef = useRef<AgentMessage | null>(null);
+  // How much of the streaming reply has already been enqueued for speech.
+  const streamSpokenRef = useRef(0);
+  useEffect(() => {
+    const wasRunning = prevAgentRunningRef.current;
+    prevAgentRunningRef.current = agentRunning;
+    if (agentRunning) {
+      speakPendingRef.current = false;
+      streamSpokenRef.current = 0;
+      return;
+    }
+    if (wasRunning) speakPendingRef.current = true;
+    if (!speakPendingRef.current) return;
+    if (!completionNotificationsEnabled || !voiceOutputEnabledRef.current || !voiceOutputAutoSpeakRef.current) {
+      speakPendingRef.current = false;
+      return;
+    }
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message.role !== "assistant") continue;
+      if (lastSpokenAssistantRef.current !== message) {
+        lastSpokenAssistantRef.current = message;
+        const spoken = getAssistantAnswerText(message);
+        const clean = spoken ? (extractSpeakableText(spoken) ?? "") : "";
+        if (enqueueAssistantSpeechRef.current) {
+          // Streaming speech already read the complete sentences; flush only
+          // the unfinished tail and close the queue.
+          const remainder = clean.slice(streamSpokenRef.current);
+          streamSpokenRef.current = clean.length;
+          finishAssistantSpeechRef.current?.(remainder);
+        } else if (clean) {
+          speakAssistantReplyRef.current?.(clean);
+        }
+      } else if (enqueueAssistantSpeechRef.current) {
+        // Already fully spoken during streaming; just close an open queue.
+        finishAssistantSpeechRef.current?.("");
+      }
+      speakPendingRef.current = false;
+      return;
+    }
+    // No assistant message in the list yet; keep waiting for the next update.
+  }, [messages, agentRunning, completionNotificationsEnabled]);
+  // Streaming speech: enqueue each complete sentence while the agent is still
+  // generating, so playback starts with the first sentence instead of after
+  // the whole reply.
+  useEffect(() => {
+    if (!streamState.isStreaming) return;
+    if (!voiceOutputEnabledRef.current || !voiceOutputAutoSpeakRef.current) return;
+    if (!completionNotificationsEnabled) return;
+    const message = streamState.streamingMessage;
+    if (!message) return;
+    const raw = getAssistantAnswerText(message);
+    if (!raw) return;
+    const clean = extractSpeakableText(raw) ?? "";
+    const spoken = streamSpokenRef.current;
+    if (clean.length <= spoken) return;
+    const complete = firstCompleteSentences(clean.slice(spoken));
+    if (!complete) return;
+    streamSpokenRef.current = spoken + complete.length;
+    enqueueAssistantSpeechRef.current?.(complete);
+  }, [streamState, completionNotificationsEnabled]);
+  // Switching sessions must not read the loaded session's last reply.
+  useEffect(() => {
+    speakPendingRef.current = false;
+    lastSpokenAssistantRef.current = null;
+  }, [session?.id]);
   const sessionBusy = agentRunning || bashRunning;
   // Codex-style edit: entering edit mode changes nothing until Send; Cancel
   // simply leaves. Navigation to the edited point (which moves the session leaf
@@ -1087,6 +1175,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       voiceOutputSpeaking={voiceOutputSpeaking}
       onVoiceOutputToggle={onVoiceOutputToggle}
       onVoiceOutputStop={onVoiceOutputStop}
+      getCurrentSpeechText={getCurrentSpeechText}
       voiceOutputAutoSpeak={voiceOutputAutoSpeak}
       onVoiceOutputAutoSpeakToggle={onVoiceOutputAutoSpeakToggle}
       onVoiceOutputSpeakLatest={speakLatestReply}

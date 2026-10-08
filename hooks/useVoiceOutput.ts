@@ -1,9 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getSharedAudioContext, resumeSharedAudioContext } from "@/lib/audio-context";
 import {
   DEFAULT_VOICE_RATE,
+  EDGE_TTS_VOICES,
   VOICE_AUTO_SPEAK_KEY,
+  VOICE_NEURAL_KEY,
   VOICE_OUTPUT_ENABLED_KEY,
   VOICE_OUTPUT_VOICE_KEY,
   VOICE_RATE_KEY,
@@ -36,6 +39,8 @@ export interface UseVoiceOutputResult {
   enabled: boolean;
   /** Only meaningful while enabled: speak automatically when a reply lands. */
   autoSpeak: boolean;
+  /** When on, replies are read with Edge neural voices via the server. */
+  neural: boolean;
   rate: number;
   speaking: boolean;
   /** Voices the browser exposes for the currently relevant languages. */
@@ -48,8 +53,15 @@ export interface UseVoiceOutputResult {
   previewVoice: (voice: AvailableVoice) => void;
   onToggle: () => void;
   onAutoSpeakToggle: () => void;
+  onNeuralToggle: () => void;
   onRateChange: (rate: number) => void;
   speak: (text: string) => void;
+  /** Appends text to the speech queue without interrupting current playback. */
+  enqueueSpeech: (text: string) => void;
+  /** Enqueues the final remainder and closes the queue (streaming speech done). */
+  finishSpeechQueue: (remainder: string) => void;
+  /** Text currently being spoken or queued, for microphone echo filtering. */
+  getCurrentSpeechText: () => string;
   stop: () => void;
 }
 
@@ -59,11 +71,11 @@ export interface UseVoiceOutputResult {
  * and the engine queues chunks so speaking continues across them.
  */
 export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutputResult {
-  const supported = typeof window !== "undefined" && "speechSynthesis" in window;
   const [enabled, setEnabled] = useState<boolean>(() => readStoredToggle(VOICE_OUTPUT_ENABLED_KEY, false));
   // Auto-speak defaults off: enabling voice output should not silently start
   // reading every assistant reply aloud. The user opts in from settings.
   const [autoSpeak, setAutoSpeak] = useState<boolean>(() => readStoredToggle(VOICE_AUTO_SPEAK_KEY, false));
+  const [neural, setNeural] = useState<boolean>(() => readStoredToggle(VOICE_NEURAL_KEY, true));
   const [rate, setRate] = useState<number>(DEFAULT_VOICE_RATE);
   const [speaking, setSpeaking] = useState(false);
   const [voicesReady, setVoicesReady] = useState(false);
@@ -84,6 +96,28 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
   const [selectedVoice, setSelectedVoice] = useState<VoiceSelection | null>(() => readStoredVoiceSelection());
   const selectedVoiceRef = useRef<VoiceSelection | null>(selectedVoice);
   selectedVoiceRef.current = selectedVoice;
+  const neuralRef = useRef(neural);
+  neuralRef.current = neural;
+  // The <audio> element used for Edge TTS playback, so stop() can cut it off.
+  const neuralAudioRef = useRef<HTMLAudioElement | null>(null);
+  // The Web Audio source used for Edge TTS playback (primary path).
+  const neuralSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Streaming speech queue: `enqueueSpeech` appends while the agent generates;
+  // a new generation (speak/stop) bumps the token, clears the queue and ends
+  // the previous player loop.
+  const speechQueueRef = useRef<string[]>([]);
+  const speechQueueClosedRef = useRef(true);
+  const speechQueueWakeRef = useRef<() => void>(() => {});
+  // Explicit liveness flag: enqueue/finish (re)start the loop whenever it is
+  // not running, independent of generation tokens (which only govern
+  // interruption).
+  const queueLoopAliveRef = useRef(false);
+  // Sliding window of recently spoken text, for microphone echo filtering.
+  const spokenHistoryRef = useRef("");
+  // Text currently being spoken (neural current chunk or pending browser
+  // utterances) — used for echo detection while the microphone stays open.
+  const currentChunkRef = useRef("");
+  const browserPendingRef = useRef<string[]>([]);
 
   // Restore the persisted speech rate once on mount.
   useEffect(() => {
@@ -149,25 +183,275 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
     };
   }, []);
 
+  /** Cut off the currently playing neural audio, if any. */
+  const killNeuralAudio = useCallback(() => {
+    const source = neuralSourceRef.current;
+    if (source) {
+      neuralSourceRef.current = null;
+      try { source.stop(); } catch { /* not started */ }
+    }
+    const audio = neuralAudioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.src = ""; // fires the error listener, resolving the play promise
+      neuralAudioRef.current = null;
+    }
+  }, []);
+
   const stop = useCallback(() => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    if (typeof window === "undefined") return;
     utteranceTokenRef.current += 1;
     try {
-      window.speechSynthesis.cancel();
+      window.speechSynthesis?.cancel();
     } catch {
       // Nothing queued.
     }
+    // Drop any queued streaming speech and wake the player loop so it exits.
+    speechQueueRef.current = [];
+    speechQueueClosedRef.current = true;
+    speechQueueWakeRef.current();
+    browserPendingRef.current = [];
+    killNeuralAudio();
     setSpeaking(false);
+  }, [killNeuralAudio]);
+
+  /**
+   * Read `chunks` with Edge neural voices via the server, one chunk at a
+   * time. The next chunk is prefetched while the current one plays, so
+   * network time overlaps with playback. Falls back to the browser voice for
+   * a chunk whose synthesis fails.
+   */
+  /** Fetch one chunk's audio from the Edge TTS route; null on any failure. */
+  const fetchNeuralBlob = useCallback(async (chunk: string): Promise<Blob | null> => {
+    const uiLocale = voiceLocaleForAppLocale(localeRef.current);
+    const voice = EDGE_TTS_VOICES[detectSpeechLocale(chunk, uiLocale)] ?? EDGE_TTS_VOICES["zh-CN"];
+    try {
+      const response = await fetch("/api/voice/tts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          text: chunk,
+          voice,
+          // Relative percentage, e.g. 1.2× → +20.
+          rate: Math.round((rateRef.current - 1) * 100),
+        }),
+      });
+      if (!response.ok) return null;
+      return await response.blob();
+    } catch {
+      return null;
+    }
   }, []);
+
+  const playNeuralBlob = useCallback(async (blob: Blob, token: number): Promise<void> => {
+    const fallback = () => new Promise<void>((resolve) => {
+      const audio = new Audio(URL.createObjectURL(blob));
+      neuralAudioRef.current = audio;
+      const done = () => {
+        audio.removeEventListener("ended", done);
+        audio.removeEventListener("error", done);
+        URL.revokeObjectURL(audio.src);
+        if (neuralAudioRef.current === audio) neuralAudioRef.current = null;
+        resolve();
+      };
+      audio.addEventListener("ended", done);
+      audio.addEventListener("error", done);
+      void audio.play().catch(done);
+      if (utteranceTokenRef.current !== token) {
+        // Generation was replaced while starting up; cut the audio immediately.
+        audio.pause();
+        audio.src = "";
+        done();
+      }
+    });
+    // Primary path: Web Audio. Once the shared context is running (unlocked
+    // by any user gesture), playback is not subject to the per-element
+    // autoplay policy that silently rejects HTMLAudioElement.play().
+    const ctx = getSharedAudioContext();
+    if (ctx) {
+      resumeSharedAudioContext();
+      try {
+        const buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
+        if (utteranceTokenRef.current !== token) return;
+        if (ctx.state === "running") {
+          await new Promise<void>((resolve) => {
+            const source = ctx.createBufferSource();
+            source.buffer = buffer;
+            source.onended = () => {
+              if (neuralSourceRef.current === source) neuralSourceRef.current = null;
+              resolve();
+            };
+            neuralSourceRef.current = source;
+            source.connect(ctx.destination);
+            if (utteranceTokenRef.current !== token) {
+              try { source.stop(); } catch { /* not started */ }
+              resolve();
+              return;
+            }
+            source.start();
+          });
+          return;
+        }
+      } catch {
+        // decodeAudioData failed (bad data, Safari quirks); fall through to
+        // the media-element fallback.
+      }
+    }
+    await fallback();
+  }, []);
+
+  /**
+   * Player loop for the speech queue. Drains the queue; while the queue is
+   * open it sleeps between chunks so streaming appends continue playback
+   * seamlessly. A newer generation (speak/stop) replaces the queue in place;
+   * the loop adopts it and keeps running — it only exits when the queue is
+   * empty AND closed.
+   */
+  const runQueueLoop = useCallback(() => {
+    if (queueLoopAliveRef.current) return;
+    queueLoopAliveRef.current = true;
+    void (async () => {
+      let token = utteranceTokenRef.current;
+      setSpeaking(true);
+      let prefetch: { text: string; promise: Promise<Blob | null> } | null = null;
+      for (;;) {
+        if (utteranceTokenRef.current !== token) {
+          // A newer generation replaced the queue; adopt it and keep going.
+          token = utteranceTokenRef.current;
+          prefetch = null;
+        }
+        const chunk = speechQueueRef.current.shift();
+        if (chunk === undefined) {
+          if (speechQueueClosedRef.current) break;
+          await new Promise<void>((resolve) => { speechQueueWakeRef.current = resolve; });
+          continue;
+        }
+        currentChunkRef.current = chunk;
+        spokenHistoryRef.current = `${spokenHistoryRef.current} ${chunk}`.slice(-1200);
+        if (!prefetch || prefetch.text !== chunk) prefetch = null;
+        const blobPromise = prefetch ? prefetch.promise : fetchNeuralBlob(chunk);
+        prefetch = null;
+        const next = speechQueueRef.current[0];
+        if (next !== undefined) prefetch = { text: next, promise: fetchNeuralBlob(next) };
+        const blob = await blobPromise;
+        if (blob === null) {
+          // Synthesis failed (server unreachable, Edge API down, …); read
+          // this chunk with the browser voice and keep draining the queue.
+          queueBrowserSpeech([chunk]);
+        } else {
+          await playNeuralBlob(blob, token);
+        }
+        currentChunkRef.current = "";
+      }
+      queueLoopAliveRef.current = false;
+      currentChunkRef.current = "";
+      // The browser fallback may still be speaking; keep `speaking` then.
+      const synthSpeaking = typeof window !== "undefined"
+        && (window.speechSynthesis?.speaking || window.speechSynthesis?.pending);
+      if (!synthSpeaking) setSpeaking(false);
+    })();
+  }, [fetchNeuralBlob, playNeuralBlob]);
+
+  /** Start a fresh speech generation, replacing whatever was playing. */
+  const startNeuralGeneration = useCallback((chunks: string[]) => {
+    utteranceTokenRef.current += 1;
+    speechQueueRef.current = [...chunks];
+    speechQueueClosedRef.current = false;
+    killNeuralAudio();
+    speechQueueWakeRef.current();
+    runQueueLoop();
+  }, [runQueueLoop, killNeuralAudio]);
+
+  /** Append chunks to the browser speech engine without cancelling queued ones. */
+  const enqueueBrowser = useCallback((chunks: string[]) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    const synth = window.speechSynthesis;
+    if (!browserPendingRef.current.length) {
+      // First append of a generation: invalidate any stale speech.
+      utteranceTokenRef.current += 1;
+    }
+    setSpeaking(true);
+    const uiLocale = voiceLocaleForAppLocale(localeRef.current);
+    chunks.forEach((chunk) => {
+      spokenHistoryRef.current = `${spokenHistoryRef.current} ${chunk}`.slice(-1200);
+      browserPendingRef.current.push(chunk);
+      const targetLocale = detectSpeechLocale(chunk, uiLocale);
+      const voice = pickVoice(voicesRef.current, targetLocale);
+      const utterance = new SpeechSynthesisUtterance(chunk);
+      utterance.rate = rateRef.current;
+      utterance.lang = voice?.lang || targetLocale;
+      if (voice) utterance.voice = voice;
+      const settle = () => {
+        const index = browserPendingRef.current.indexOf(chunk);
+        if (index !== -1) browserPendingRef.current.splice(index, 1);
+        if (!browserPendingRef.current.length) setSpeaking(false);
+      };
+      utterance.onend = settle;
+      utterance.onerror = settle;
+      synth.speak(utterance);
+    });
+  }, []);
+
+  /** Appends sentences to the live queue without interrupting playback. */
+  const enqueueSpeech = useCallback((text: string) => {
+    const chunks = splitForSpeech(text, 90);
+    if (!chunks.length) return;
+    if (!neuralRef.current) {
+      enqueueBrowser(chunks);
+      return;
+    }
+    speechQueueRef.current.push(...chunks);
+    speechQueueClosedRef.current = false;
+    // Ensure a player loop is running (first streaming chunk, or the previous
+    // loop drained and exited).
+    speechQueueWakeRef.current();
+    runQueueLoop();
+  }, [runQueueLoop, enqueueBrowser]);
+
+  /** Enqueues the final remainder and closes the queue. */
+  const finishSpeechQueue = useCallback((remainder: string) => {
+    const chunks = splitForSpeech(remainder, 90);
+    if (!neuralRef.current) {
+      enqueueBrowser(chunks);
+      return;
+    }
+    speechQueueRef.current.push(...chunks);
+    speechQueueClosedRef.current = true;
+    speechQueueWakeRef.current();
+    runQueueLoop();
+  }, [runQueueLoop, enqueueBrowser]);
+
+  /** Text currently being spoken or queued, plus a recent-history window —
+   * used by the microphone input to filter the assistant's own voice (echo). */
+  const getCurrentSpeechText = useCallback(() => (
+    currentChunkRef.current
+    + speechQueueRef.current.join("")
+    + browserPendingRef.current.join("")
+    + spokenHistoryRef.current
+  ), []);
 
   /**
    * Queue `text` with an explicit voice (or auto-pick by text language).
    * `override` is used by the settings preview and bypasses the saved pick.
    */
   const speakWith = useCallback((text: string, override?: AvailableVoice | null) => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-    const chunks = splitForSpeech(text);
+    if (typeof window === "undefined") return;
+    // Neural voices read better in short sentence-sized pieces, and smaller
+    // chunks mean the first audio starts sooner.
+    const chunks = splitForSpeech(text, neuralRef.current ? 90 : 220);
     if (!chunks.length) return;
+    if (neuralRef.current) {
+      startNeuralGeneration(chunks);
+      return;
+    }
+    if (!("speechSynthesis" in window)) return;
+    queueBrowserSpeech(chunks, override);
+  }, [startNeuralGeneration]);
+
+  /** Browser-native utterance queue; extracted so neural fallback can reuse it. */
+  function queueBrowserSpeech(chunks: string[], override?: AvailableVoice | null) {
+    if (!("speechSynthesis" in window)) return;
+    const text = chunks.join(" ");
     const synth = window.speechSynthesis;
     // A fresh request replaces whatever was still being read.
     utteranceTokenRef.current += 1;
@@ -196,6 +480,7 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
     const utteranceLang = chosen?.lang || (voice ? voice.lang : targetLocale);
     setSpeaking(true);
     chunks.forEach((chunk, index) => {
+      spokenHistoryRef.current = `${spokenHistoryRef.current} ${chunk}`.slice(-1200);
       const utterance = new SpeechSynthesisUtterance(chunk);
       utterance.rate = rateRef.current;
       utterance.lang = utteranceLang;
@@ -209,11 +494,23 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
       }
       synth.speak(utterance);
     });
-  }, []);
+  }
 
   const speak = useCallback((text: string) => {
     speakWith(text);
   }, [speakWith]);
+
+  const onNeuralToggle = useCallback(() => {
+    setNeural((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(VOICE_NEURAL_KEY, String(next));
+      } catch {
+        // Persisting is best-effort.
+      }
+      return next;
+    });
+  }, []);
 
   const onVoiceChange = useCallback((voice: AvailableVoice | null) => {
     const next: VoiceSelection | null = voice
@@ -304,6 +601,11 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
   // Cancel any in-flight speech when the component unmounts.
   useEffect(() => () => {
     utteranceTokenRef.current += 1;
+    speechQueueRef.current = [];
+    speechQueueClosedRef.current = true;
+    speechQueueWakeRef.current();
+    neuralSourceRef.current?.stop();
+    neuralAudioRef.current?.pause();
     try {
       window.speechSynthesis?.cancel();
     } catch {
@@ -312,19 +614,24 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
   }, []);
 
   return {
-    supported,
+    supported: true,
     enabled,
     autoSpeak,
+    neural,
     rate,
     speaking,
     onToggle,
     onAutoSpeakToggle,
+    onNeuralToggle,
     onRateChange,
     voices: availableVoices,
     selectedVoice,
     onVoiceChange,
     previewVoice,
     speak: speakNow,
+    enqueueSpeech,
+    finishSpeechQueue,
+    getCurrentSpeechText,
     stop,
   };
 }

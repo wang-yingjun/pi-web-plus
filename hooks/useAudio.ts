@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { getSharedAudioContext } from "@/lib/audio-context";
 
 function playTone(ctx: AudioContext) {
   const now = ctx.currentTime;
@@ -31,19 +32,10 @@ export function useAudio() {
   const enabledRef = useRef(enabled);
   useEffect(() => { enabledRef.current = enabled; }, [enabled]);
 
-  // Reuse a single AudioContext so it can be resumed if the browser
-  // autoplay policy suspends it (contexts created outside user gestures
-  // start in "suspended" state and produce no sound).
-  const ctxRef = useRef<AudioContext | null>(null);
-  const getCtx = useCallback((): AudioContext | null => {
-    if (ctxRef.current && ctxRef.current.state !== "closed") return ctxRef.current;
-    try {
-      ctxRef.current = new AudioContext();
-    } catch {
-      return null;
-    }
-    return ctxRef.current;
-  }, []);
+  // Reuse a single shared AudioContext so it can be resumed if the browser
+  // autoplay policy suspends it (contexts created outside user gestures start
+  // in "suspended" state and produce no sound).
+  const getCtx = useCallback((): AudioContext | null => getSharedAudioContext(), []);
 
   const unlockAudio = useCallback((force = false) => {
     if (!force && !enabledRef.current) return;

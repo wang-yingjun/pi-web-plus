@@ -42,6 +42,8 @@ export const zhTWLocale: LocalePlugin = {
     "settings.voicePreview": "試聽",
     "settings.voiceNameHint": "音色來自你的瀏覽器與作業系統，帶 ☁ 的是雲端音色（需要連網）。想要更多音色，請先在系統語音設定裡下載，然後重新開啟本面板。",
     "settings.voiceAutoSpeak": "自動朗讀新回覆",
+    "settings.voiceNeural": "高品質神經音色（Edge TTS）",
+    "settings.voiceNeuralHint": "使用微軟 Edge 神經網路音色（如曉剪、雲希），比系統音色自然得多；需要伺服器端能存取微軟語音服務。開啟後上方瀏覽器音色選擇不再生效。",
     "settings.voiceRate": "語速",
     "settings.languageDescription": "選擇整個介面使用的語言。",
     "settings.shellTool": "Shell 工具",

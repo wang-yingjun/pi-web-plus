@@ -42,6 +42,8 @@ export const zhCNLocale: LocalePlugin = {
     "settings.voicePreview": "试听",
     "settings.voiceNameHint": "音色来自你的浏览器和操作系统，带 ☁ 的是云端音色（需要联网）。想要更多音色，请先在系统语音设置里下载，然后重新打开本面板。",
     "settings.voiceAutoSpeak": "自动朗读新回复",
+    "settings.voiceNeural": "高质量神经音色（Edge TTS）",
+    "settings.voiceNeuralHint": "使用微软 Edge 神经网络音色（如晓剪、云希），比系统音色自然得多；需要服务端能访问微软语音服务。开启后上方浏览器音色选择不再生效。",
     "settings.voiceRate": "语速",
     "settings.languageDescription": "选择整个界面使用的语言。",
     "settings.shellTool": "Shell 工具",

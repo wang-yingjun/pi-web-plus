@@ -2422,6 +2422,10 @@ export function AppShell() {
               onVoiceOutputStop={voiceOutput.stop}
               onVoiceOutputAutoSpeakToggle={voiceOutput.onAutoSpeakToggle}
               speakAssistantReply={voiceOutput.speak}
+              voiceOutputNeural={voiceOutput.neural}
+              enqueueAssistantSpeech={voiceOutput.enqueueSpeech}
+              finishAssistantSpeech={voiceOutput.finishSpeechQueue}
+              getCurrentSpeechText={voiceOutput.getCurrentSpeechText}
               voiceInputLocale={voiceInputLocale}
               onVoiceInputLocaleChange={handleVoiceInputLocaleChange}
             />
@@ -2621,6 +2625,8 @@ export function AppShell() {
         onVoiceOutputToggle={voiceOutput.onToggle}
         voiceOutputAutoSpeak={voiceOutput.autoSpeak}
         onVoiceOutputAutoSpeakToggle={voiceOutput.onAutoSpeakToggle}
+        voiceNeural={voiceOutput.neural}
+        onVoiceNeuralToggle={voiceOutput.onNeuralToggle}
         voiceRate={voiceOutput.rate}
         onVoiceRateChange={voiceOutput.onRateChange}
         voiceInputLocale={voiceInputLocale}

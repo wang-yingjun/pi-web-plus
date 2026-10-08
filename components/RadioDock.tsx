@@ -154,23 +154,30 @@ async function corsAllowed(url: string): Promise<boolean> {
 }
 
 export function RadioDock() {
-  const [collapsed, setCollapsed] = useState<boolean>(() => loadStored(LS.collapsed, true));
-  const [station, setStation] = useState<Station>(() => {
-    const stored = loadStored<Station | null>(LS.station, null);
-    return stored?.url ? stored : PRESETS[0];
-  });
-  const [pinned, setPinned] = useState<Station[]>(() => loadStored<Station[]>(LS.pinned, []));
+  // localStorage is only available on the client, so initial state uses stable
+  // defaults and stored values are applied after mount to avoid hydration
+  // mismatches (server renders PRESETS[0], client would render the saved one).
+  const [collapsed, setCollapsed] = useState<boolean>(true);
+  const [station, setStation] = useState<Station>(PRESETS[0]);
+  const [pinned, setPinned] = useState<Station[]>([]);
   const [searchResults, setSearchResults] = useState<Station[] | null>(null);
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [status, setStatus] = useState<"idle" | "connecting" | "playing" | "paused" | "error">("idle");
-  const [volume, setVolume] = useState<number>(() => {
-    const v = loadStored<number>(LS.volume, 25);
-    return Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 25;
-  });
+  const [volume, setVolume] = useState<number>(25);
   const [muted, setMuted] = useState(false);
+
+  useEffect(() => {
+    const storedStation = loadStored<Station | null>(LS.station, null);
+    if (storedStation?.url) setStation(storedStation);
+    setCollapsed(loadStored<boolean>(LS.collapsed, true));
+    setPinned(loadStored<Station[]>(LS.pinned, []));
+    const storedVolume = loadStored<number>(LS.volume, 25);
+    if (Number.isFinite(storedVolume)) setVolume(Math.max(0, Math.min(100, storedVolume)));
+    // Run once after mount only.
+  }, []);
 
   const corsAudioRef = useRef<HTMLAudioElement | null>(null);
   const plainAudioRef = useRef<HTMLAudioElement | null>(null);

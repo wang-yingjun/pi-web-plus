@@ -53,6 +53,8 @@ interface Props {
   onVoiceOutputToggle?: () => void;
   voiceOutputAutoSpeak?: boolean;
   onVoiceOutputAutoSpeakToggle?: () => void;
+  voiceNeural?: boolean;
+  onVoiceNeuralToggle?: () => void;
   voiceRate?: number;
   onVoiceRateChange?: (rate: number) => void;
   voiceInputLocale?: VoiceLocale;
@@ -86,7 +88,7 @@ export function SettingsSectionIcon({ section, size = 16, strokeWidth = 1.8 }: {
   return <svg {...common}><path d="M9 7V2M15 7V2M6 13V8a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v5a6 6 0 0 1-12 0ZM12 19v3" /></svg>;
 }
 
-function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange, voiceOutputSupported, voiceOutputEnabled, onVoiceOutputToggle, voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle, voiceRate, onVoiceRateChange, voiceInputLocale, onVoiceInputLocaleChange, voiceOptions, selectedVoiceURI, onVoiceSelect, onVoicePreview }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange" | "voiceOutputSupported" | "voiceOutputEnabled" | "onVoiceOutputToggle" | "voiceOutputAutoSpeak" | "onVoiceOutputAutoSpeakToggle" | "voiceRate" | "onVoiceRateChange" | "voiceInputLocale" | "onVoiceInputLocaleChange" | "voiceOptions" | "selectedVoiceURI" | "onVoiceSelect" | "onVoicePreview">) {
+function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange, voiceOutputSupported, voiceOutputEnabled, onVoiceOutputToggle, voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle, voiceNeural, onVoiceNeuralToggle, voiceRate, onVoiceRateChange, voiceInputLocale, onVoiceInputLocaleChange, voiceOptions, selectedVoiceURI, onVoiceSelect, onVoicePreview }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange" | "voiceOutputSupported" | "voiceOutputEnabled" | "onVoiceOutputToggle" | "voiceOutputAutoSpeak" | "onVoiceOutputAutoSpeakToggle" | "voiceNeural" | "onVoiceNeuralToggle" | "voiceRate" | "onVoiceRateChange" | "voiceInputLocale" | "onVoiceInputLocaleChange" | "voiceOptions" | "selectedVoiceURI" | "onVoiceSelect" | "onVoicePreview">) {
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
   const { width: chatContentWidth, setWidth: setChatContentWidth, fontSize, setFontSize } = useChatAppearance();
@@ -333,13 +335,25 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
           />
         </div>
         <div className="settings-voice-option settings-voice-option-stack">
+          <div className="settings-voice-option" style={{ width: "100%" }}>
+            <span>{t("settings.voiceNeural")}</span>
+            <ConfigSwitch
+              checked={Boolean(voiceNeural)}
+              label={t("settings.voiceNeural")}
+              disabled={!voiceOutputEnabled || !onVoiceNeuralToggle}
+              onChange={() => onVoiceNeuralToggle?.()}
+            />
+          </div>
+          {voiceNeural && <p className="settings-voice-hint">{t("settings.voiceNeuralHint")}</p>}
+        </div>
+        <div className="settings-voice-option settings-voice-option-stack">
           <label htmlFor="settings-voice-name">{t("settings.voiceName")}</label>
           <div className="settings-voice-picker">
             <select
               id="settings-voice-name"
               className="settings-voice-select"
               value={selectedVoiceURI ?? ""}
-              disabled={!voiceOutputEnabled || !voiceOptions?.length}
+              disabled={!voiceOutputEnabled || Boolean(voiceNeural) || !voiceOptions?.length}
               onChange={(event) => {
                 const picked = (voiceOptions ?? []).find((voice) => voice.voiceURI === event.target.value) ?? null;
                 onVoiceSelect?.(picked);
@@ -355,7 +369,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
             <button
               type="button"
               className="config-button config-button-small config-button-secondary"
-              disabled={!voiceOptions?.length}
+              disabled={!voiceOptions?.length || Boolean(voiceNeural)}
               onClick={() => {
                 const picked = (voiceOptions ?? []).find((voice) => voice.voiceURI === selectedVoiceURI)
                   ?? (voiceOptions ?? [])[0];

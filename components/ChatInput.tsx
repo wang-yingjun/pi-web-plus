@@ -31,6 +31,8 @@ import { useChatAppearance } from "@/hooks/useChatAppearance";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import {
   appendTranscript,
+  isEchoSpeech,
+  normalizeForEcho,
   normalizeVoiceInputLocale,
   readStoredToggle,
   readStoredVoiceInputLocale,
@@ -118,6 +120,8 @@ interface Props {
   /** Speech-recognition language, owned by AppShell so Settings stays in sync. */
   voiceInputLocale?: VoiceLocale;
   onVoiceInputLocaleChange?: (locale: VoiceLocale) => void;
+  /** Text currently/recently spoken — used to filter microphone echo. */
+  getCurrentSpeechText?: () => string;
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
@@ -598,7 +602,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   soundEnabled, onSoundToggle, onAudioUnlock,
   voiceOutputEnabled, voiceOutputSupported, voiceOutputSpeaking, onVoiceOutputToggle, onVoiceOutputStop, onVoiceOutputSpeakLatest,
   voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle,
-  voiceInputLocale, onVoiceInputLocaleChange,
+  voiceInputLocale, onVoiceInputLocaleChange, getCurrentSpeechText,
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
@@ -683,13 +687,37 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const listeningRef = useRef(false);
   const handsFreeRef = useRef(handsFree);
   handsFreeRef.current = handsFree;
-  const handsFreeStartedRef = useRef(false);
+  // Persisted hands-free mode stays armed across reloads: the resume effect
+  // will start listening on mount. If the browser refuses (no user gesture
+  // yet), the voice error is surfaced and a single mic click activates it.
+  const handsFreeStartedRef = useRef(handsFree);
   const manualMicStopRef = useRef(false);
   const lastVoiceActivityRef = useRef(0);
   const lastDictationRef = useRef("");
+  const lastBargeInRef = useRef(0);
   const autoSendRef = useRef<() => void>(() => {});
+  const getCurrentSpeechTextRef = useRef(getCurrentSpeechText);
+  getCurrentSpeechTextRef.current = getCurrentSpeechText;
+
+  const onSteerRef = useRef(onSteer);
+  onSteerRef.current = onSteer;
 
   const applyVoiceTranscript = useCallback((transcript: string) => {
+    if (handsFreeRef.current && speakingRef.current) {
+      // Microphone stays open while the assistant speaks: drop its own voice
+      // (echo), and barge in on real user speech.
+      const spoken = getCurrentSpeechTextRef.current?.() ?? "";
+      if (isEchoSpeech(transcript, spoken)) return;
+      onVoiceOutputStop?.();
+    }
+    // Barge-in on a streaming run too: fresh user speech aborts the run and
+    // the utterance auto-sends as the next message once it goes quiet.
+    if (handsFreeRef.current && isStreamingRef.current
+      && normalizeForEcho(transcript).length >= 2
+      && Date.now() - lastBargeInRef.current > 2000) {
+      lastBargeInRef.current = Date.now();
+      onAbort();
+    }
     lastVoiceActivityRef.current = Date.now();
     lastDictationRef.current = transcript;
     const base = voiceBaseRef.current;
@@ -710,6 +738,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       ta.style.height = "auto";
       ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refs only; handlers are read live
   }, []);
 
   const handleVoiceError = useCallback((code: string) => {
@@ -795,10 +824,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     startVoiceInput();
   }, [stopVoiceInput, startVoiceInput, voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle]);
 
-  // Hands-free: pause the mic while the agent streams or the reply is being
-  // spoken, so the speaker output is not transcribed back into the composer.
+  // Hands-free keeps the microphone open at all times (streaming and playback
+  // alike); speech during playback is filtered for echo in the transcript
+  // handler above. Only manual (non-hands-free) dictation pauses with the run.
   useEffect(() => {
-    if (!handsFree) return;
+    if (handsFree) return;
     if ((isStreaming || Boolean(voiceOutputSpeaking)) && voiceListening) {
       voiceBaseRef.current = null;
       lastDictationRef.current = "";
@@ -822,16 +852,26 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!handsFree) return;
     const timer = window.setInterval(() => {
       if (!listeningRef.current) return;
-      if (isStreamingRef.current || speakingRef.current) return;
       const text = lastDictationRef.current.trim();
       if (!text) return;
       if (Date.now() - lastVoiceActivityRef.current < VOICE_HANDS_FREE_SILENCE_MS) return;
       lastDictationRef.current = "";
       lastVoiceActivityRef.current = 0;
       resetVoiceInput();
+      if (isStreamingRef.current) {
+        // The agent is still working: insert the user's words as steering.
+        if (onSteerRef.current) {
+          const message = valueRef.current.trim();
+          clearInput();
+          voiceBaseRef.current = null;
+          if (message) onSteerRef.current(message);
+        }
+        return;
+      }
       autoSendRef.current();
     }, 250);
     return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- clearInput is stable and read via refs elsewhere
   }, [handsFree, resetVoiceInput]);
 
   useImperativeHandle(ref, () => ({

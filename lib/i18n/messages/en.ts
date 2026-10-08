@@ -42,6 +42,8 @@ export const enLocale: LocalePlugin = {
     "settings.voicePreview": "Preview",
     "settings.voiceNameHint": "Voices come from your browser and operating system. A ☁ marks a cloud voice (needs a network connection). To get more voices, add them in your system's speech settings, then reopen this panel.",
     "settings.voiceAutoSpeak": "Read new replies automatically",
+    "settings.voiceNeural": "High-quality neural voices (Edge TTS)",
+    "settings.voiceNeuralHint": "Uses Microsoft Edge neural voices (e.g. Xiaoxiao, Yunxi) — far more natural than system voices. Requires the server to reach Microsoft's speech service. When on, the browser voice picker above has no effect.",
     "settings.voiceRate": "Speaking rate",
     "settings.languageDescription": "Choose the language used throughout the interface.",
     "settings.shellTool": "Shell tool",
