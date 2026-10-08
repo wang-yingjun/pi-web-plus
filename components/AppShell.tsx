@@ -2627,6 +2627,9 @@ export function AppShell() {
         onVoiceOutputAutoSpeakToggle={voiceOutput.onAutoSpeakToggle}
         voiceNeural={voiceOutput.neural}
         onVoiceNeuralToggle={voiceOutput.onNeuralToggle}
+        voiceNeuralVoice={voiceOutput.neuralVoice}
+        onVoiceNeuralVoiceChange={voiceOutput.onNeuralVoiceChange}
+        onVoiceNeuralVoicePreview={voiceOutput.previewNeuralVoice}
         voiceRate={voiceOutput.rate}
         onVoiceRateChange={voiceOutput.onRateChange}
         voiceInputLocale={voiceInputLocale}

@@ -7,11 +7,14 @@ import {
   EDGE_TTS_VOICES,
   VOICE_AUTO_SPEAK_KEY,
   VOICE_NEURAL_KEY,
+  VOICE_NEURAL_VOICE_KEY,
   VOICE_OUTPUT_ENABLED_KEY,
   VOICE_OUTPUT_VOICE_KEY,
   VOICE_RATE_KEY,
   detectSpeechLocale,
+  normalizeNeuralVoiceId,
   normalizeVoiceRate,
+  readStoredNeuralVoiceId,
   readStoredToggle,
   readStoredVoiceSelection,
   resolveStoredVoice,
@@ -41,6 +44,12 @@ export interface UseVoiceOutputResult {
   autoSpeak: boolean;
   /** When on, replies are read with Edge neural voices via the server. */
   neural: boolean;
+  /** Selected Edge neural voice id, or "" to pick automatically by language. */
+  neuralVoice: string;
+  /** Choose the Edge neural voice used for playback. */
+  onNeuralVoiceChange: (id: string) => void;
+  /** Play a short sample with a given Edge neural voice (does not persist it). */
+  previewNeuralVoice: (id: string) => void;
   rate: number;
   speaking: boolean;
   /** Voices the browser exposes for the currently relevant languages. */
@@ -76,6 +85,7 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
   // reading every assistant reply aloud. The user opts in from settings.
   const [autoSpeak, setAutoSpeak] = useState<boolean>(() => readStoredToggle(VOICE_AUTO_SPEAK_KEY, false));
   const [neural, setNeural] = useState<boolean>(() => readStoredToggle(VOICE_NEURAL_KEY, true));
+  const [neuralVoice, setNeuralVoice] = useState<string>(() => readStoredNeuralVoiceId());
   const [rate, setRate] = useState<number>(DEFAULT_VOICE_RATE);
   const [speaking, setSpeaking] = useState(false);
   const [voicesReady, setVoicesReady] = useState(false);
@@ -98,6 +108,8 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
   selectedVoiceRef.current = selectedVoice;
   const neuralRef = useRef(neural);
   neuralRef.current = neural;
+  const neuralVoiceRef = useRef(neuralVoice);
+  neuralVoiceRef.current = neuralVoice;
   // The <audio> element used for Edge TTS playback, so stop() can cut it off.
   const neuralAudioRef = useRef<HTMLAudioElement | null>(null);
   // Reusable media element for the playback fallback: a fresh HTMLAudioElement
@@ -226,9 +238,12 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
    * a chunk whose synthesis fails.
    */
   /** Fetch one chunk's audio from the Edge TTS route; null on any failure. */
-  const fetchNeuralBlob = useCallback(async (chunk: string): Promise<Blob | null> => {
+  const fetchNeuralBlob = useCallback(async (chunk: string, overrideVoice?: string): Promise<Blob | null> => {
     const uiLocale = voiceLocaleForAppLocale(localeRef.current);
-    const voice = EDGE_TTS_VOICES[detectSpeechLocale(chunk, uiLocale)] ?? EDGE_TTS_VOICES["zh-CN"];
+    const voice = overrideVoice
+      || neuralVoiceRef.current
+      || EDGE_TTS_VOICES[detectSpeechLocale(chunk, uiLocale)]
+      || EDGE_TTS_VOICES["zh-CN"];
     try {
       const response = await fetch("/api/voice/tts", {
         method: "POST",
@@ -241,7 +256,10 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
         }),
       });
       if (!response.ok) return null;
-      return await response.blob();
+      const blob = await response.blob();
+      // Some Edge voice names come back as an empty stream; treat that as a
+      // failure so the caller can fall back to a working voice.
+      return blob.size > 0 ? blob : null;
     } catch {
       return null;
     }
@@ -526,6 +544,31 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
     });
   }, []);
 
+  const onNeuralVoiceChange = useCallback((id: string) => {
+    const normalized = normalizeNeuralVoiceId(id);
+    neuralVoiceRef.current = normalized;
+    setNeuralVoice(normalized);
+    try {
+      if (normalized) window.localStorage.setItem(VOICE_NEURAL_VOICE_KEY, normalized);
+      else window.localStorage.removeItem(VOICE_NEURAL_VOICE_KEY);
+    } catch {
+      // Persisting is best-effort.
+    }
+  }, []);
+
+  const previewNeuralVoice = useCallback((id: string) => {
+    const voice = normalizeNeuralVoiceId(id) || undefined;
+    void (async () => {
+      const blob = await fetchNeuralBlob(PREVIEW_TEXT, voice);
+      if (!blob) return;
+      stop();
+      const token = utteranceTokenRef.current;
+      setSpeaking(true);
+      await playNeuralBlob(blob, token);
+      setSpeaking(false);
+    })();
+  }, [fetchNeuralBlob, playNeuralBlob, stop]);
+
   const onVoiceChange = useCallback((voice: AvailableVoice | null) => {
     const next: VoiceSelection | null = voice
       ? { name: voice.name, lang: voice.lang, voiceURI: voice.voiceURI }
@@ -632,11 +675,14 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
     enabled,
     autoSpeak,
     neural,
+    neuralVoice,
     rate,
     speaking,
     onToggle,
     onAutoSpeakToggle,
     onNeuralToggle,
+    onNeuralVoiceChange,
+    previewNeuralVoice,
     onRateChange,
     voices: availableVoices,
     selectedVoice,

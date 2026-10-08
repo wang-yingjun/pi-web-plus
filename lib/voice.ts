@@ -19,6 +19,7 @@ export const VOICE_INPUT_LOCALE_KEY = "pi-voice-input-locale";
 export const VOICE_OUTPUT_VOICE_KEY = "pi-voice-output-voice";
 export const VOICE_HANDS_FREE_KEY = "pi-voice-hands-free";
 export const VOICE_NEURAL_KEY = "pi-voice-neural";
+export const VOICE_NEURAL_VOICE_KEY = "pi-voice-neural-voice";
 
 /**
  * Microsoft Edge neural voices (free via the Edge Read Aloud API), picked per
@@ -30,6 +31,57 @@ export const EDGE_TTS_VOICES: Record<VoiceLocale, string> = {
   "zh-TW": "zh-TW-HsiaoChenNeural",
   "en-US": "en-US-AvaNeural",
 };
+
+export interface NeuralVoiceOption {
+  /** Edge Read Aloud voice id, e.g. `zh-CN-XiaoxiaoNeural`. */
+  id: string;
+  /** Human label with gender/character, shown in the picker. */
+  label: string;
+  locale: VoiceLocale;
+}
+
+/**
+ * Edge neural voices the settings panel offers. The server re-validates each id
+ * against the same `xx-XX-NameNeural` pattern before synthesis, so an unknown
+ * value is harmless. Empty selection means "auto by reply language".
+ */
+export const EDGE_TTS_VOICE_OPTIONS: ReadonlyArray<NeuralVoiceOption> = [
+  // 中文（简体）——已实测可用
+  { id: "zh-CN-XiaoxiaoNeural", label: "晓晓 · 女 · 年轻活泼", locale: "zh-CN" },
+  { id: "zh-CN-XiaoyiNeural", label: "晓伊 · 女 · 年轻", locale: "zh-CN" },
+  { id: "zh-CN-XiaoxuanNeural", label: "晓萱 · 女 · 活泼", locale: "zh-CN" },
+  { id: "zh-CN-XiaoniNeural", label: "晓妮 · 女 · 亲和", locale: "zh-CN" },
+  { id: "zh-CN-XiaobeiNeural", label: "晓北 · 女 · 东北口音", locale: "zh-CN" },
+  { id: "zh-CN-YunxiNeural", label: "云希 · 男 · 年轻", locale: "zh-CN" },
+  { id: "zh-CN-YunjianNeural", label: "云健 · 男 · 沉稳", locale: "zh-CN" },
+  { id: "zh-CN-YunyangNeural", label: "云扬 · 男 · 新闻", locale: "zh-CN" },
+  // 中文（繁體）
+  { id: "zh-TW-HsiaoChenNeural", label: "曉臻 · 女", locale: "zh-TW" },
+  { id: "zh-TW-HsiaoYuNeural", label: "曉雨 · 女", locale: "zh-TW" },
+  // English (US)
+  { id: "en-US-AvaNeural", label: "Ava · female", locale: "en-US" },
+  { id: "en-US-EmmaNeural", label: "Emma · female", locale: "en-US" },
+  { id: "en-US-AriaNeural", label: "Aria · female", locale: "en-US" },
+  { id: "en-US-JennyNeural", label: "Jenny · female", locale: "en-US" },
+  { id: "en-US-MichelleNeural", label: "Michelle · female", locale: "en-US" },
+  { id: "en-US-AndrewNeural", label: "Andrew · male", locale: "en-US" },
+];
+
+/** Validate a stored neural voice id; unknown ids fall back to automatic. */
+export function normalizeNeuralVoiceId(value: unknown): string {
+  if (typeof value !== "string" || !value) return "";
+  return EDGE_TTS_VOICE_OPTIONS.some((option) => option.id === value) ? value : "";
+}
+
+/** Read the persisted neural voice id, or "" for automatic per-language. */
+export function readStoredNeuralVoiceId(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return normalizeNeuralVoiceId(window.localStorage.getItem(VOICE_NEURAL_VOICE_KEY));
+  } catch {
+    return "";
+  }
+}
 
 /** Silence length (ms) after which hands-free dictation auto-sends. */
 export const VOICE_HANDS_FREE_SILENCE_MS = 1100;

@@ -33,6 +33,7 @@ import { ConfigButton, ConfigSwitch } from "./SettingsUi";
 import {
   DEFAULT_VOICE_INPUT_LOCALE,
   DEFAULT_VOICE_RATE,
+  EDGE_TTS_VOICE_OPTIONS,
   MAX_VOICE_RATE,
   MIN_VOICE_RATE,
   VOICE_INPUT_LOCALES,
@@ -55,6 +56,10 @@ interface Props {
   onVoiceOutputAutoSpeakToggle?: (next?: boolean) => void;
   voiceNeural?: boolean;
   onVoiceNeuralToggle?: () => void;
+  /** Selected Edge neural voice id ("" = automatic by language). */
+  voiceNeuralVoice?: string;
+  onVoiceNeuralVoiceChange?: (id: string) => void;
+  onVoiceNeuralVoicePreview?: (id: string) => void;
   voiceRate?: number;
   onVoiceRateChange?: (rate: number) => void;
   voiceInputLocale?: VoiceLocale;
@@ -88,7 +93,7 @@ export function SettingsSectionIcon({ section, size = 16, strokeWidth = 1.8 }: {
   return <svg {...common}><path d="M9 7V2M15 7V2M6 13V8a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v5a6 6 0 0 1-12 0ZM12 19v3" /></svg>;
 }
 
-function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange, voiceOutputSupported, voiceOutputEnabled, onVoiceOutputToggle, voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle, voiceNeural, onVoiceNeuralToggle, voiceRate, onVoiceRateChange, voiceInputLocale, onVoiceInputLocaleChange, voiceOptions, selectedVoiceURI, onVoiceSelect, onVoicePreview }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange" | "voiceOutputSupported" | "voiceOutputEnabled" | "onVoiceOutputToggle" | "voiceOutputAutoSpeak" | "onVoiceOutputAutoSpeakToggle" | "voiceNeural" | "onVoiceNeuralToggle" | "voiceRate" | "onVoiceRateChange" | "voiceInputLocale" | "onVoiceInputLocaleChange" | "voiceOptions" | "selectedVoiceURI" | "onVoiceSelect" | "onVoicePreview">) {
+function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange, voiceOutputSupported, voiceOutputEnabled, onVoiceOutputToggle, voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle, voiceNeural, onVoiceNeuralToggle, voiceNeuralVoice, onVoiceNeuralVoiceChange, onVoiceNeuralVoicePreview, voiceRate, onVoiceRateChange, voiceInputLocale, onVoiceInputLocaleChange, voiceOptions, selectedVoiceURI, onVoiceSelect, onVoicePreview }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange" | "voiceOutputSupported" | "voiceOutputEnabled" | "onVoiceOutputToggle" | "voiceOutputAutoSpeak" | "onVoiceOutputAutoSpeakToggle" | "voiceNeural" | "onVoiceNeuralToggle" | "voiceNeuralVoice" | "onVoiceNeuralVoiceChange" | "onVoiceNeuralVoicePreview" | "voiceRate" | "onVoiceRateChange" | "voiceInputLocale" | "onVoiceInputLocaleChange" | "voiceOptions" | "selectedVoiceURI" | "onVoiceSelect" | "onVoicePreview">) {
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
   const { width: chatContentWidth, setWidth: setChatContentWidth, fontSize, setFontSize } = useChatAppearance();
@@ -346,6 +351,34 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
           </div>
           {voiceNeural && <p className="settings-voice-hint">{t("settings.voiceNeuralHint")}</p>}
         </div>
+        {voiceNeural && (
+          <div className="settings-voice-option settings-voice-option-stack">
+            <label htmlFor="settings-voice-neural-name">{t("settings.voiceNeuralName")}</label>
+            <div className="settings-voice-picker">
+              <select
+                id="settings-voice-neural-name"
+                className="settings-voice-select"
+                value={voiceNeuralVoice ?? ""}
+                disabled={!voiceOutputEnabled || !onVoiceNeuralVoiceChange}
+                onChange={(event) => onVoiceNeuralVoiceChange?.(event.target.value)}
+              >
+                <option value="">{t("settings.voiceNeuralAuto")}</option>
+                {EDGE_TTS_VOICE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>{option.label}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="config-button config-button-small config-button-secondary"
+                disabled={!voiceOutputEnabled || !onVoiceNeuralVoicePreview}
+                onClick={() => onVoiceNeuralVoicePreview?.(voiceNeuralVoice ?? "")}
+              >
+                {t("settings.voicePreview")}
+              </button>
+            </div>
+            <p className="settings-voice-hint">{t("settings.voiceNeuralNameHint")}</p>
+          </div>
+        )}
         <div className="settings-voice-option settings-voice-option-stack">
           <label htmlFor="settings-voice-name">{t("settings.voiceName")}</label>
           <div className="settings-voice-picker">
