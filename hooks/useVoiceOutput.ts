@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getSharedAudioContext, resumeSharedAudioContext } from "@/lib/audio-context";
+import { decodeAudioData, getSharedAudioContext } from "@/lib/audio-context";
 import {
   DEFAULT_VOICE_RATE,
   EDGE_TTS_VOICES,
@@ -100,6 +100,10 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
   neuralRef.current = neural;
   // The <audio> element used for Edge TTS playback, so stop() can cut it off.
   const neuralAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Reusable media element for the playback fallback: a fresh HTMLAudioElement
+  // created outside a gesture is autoplay-blocked, but one element that has
+  // already played keeps working.
+  const neuralFallbackRef = useRef<HTMLAudioElement | null>(null);
   // The Web Audio source used for Edge TTS playback (primary path).
   const neuralSourceRef = useRef<AudioBufferSourceNode | null>(null);
   // Streaming speech queue: `enqueueSpeech` appends while the agent generates;
@@ -245,22 +249,30 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
 
   const playNeuralBlob = useCallback(async (blob: Blob, token: number): Promise<void> => {
     const fallback = () => new Promise<void>((resolve) => {
-      const audio = new Audio(URL.createObjectURL(blob));
-      neuralAudioRef.current = audio;
+      let audio = neuralFallbackRef.current;
+      if (!audio) {
+        audio = new Audio();
+        audio.preload = "auto";
+        neuralFallbackRef.current = audio;
+      }
+      const element = audio;
+      neuralAudioRef.current = element;
+      const url = URL.createObjectURL(blob);
       const done = () => {
-        audio.removeEventListener("ended", done);
-        audio.removeEventListener("error", done);
-        URL.revokeObjectURL(audio.src);
-        if (neuralAudioRef.current === audio) neuralAudioRef.current = null;
+        element.removeEventListener("ended", done);
+        element.removeEventListener("error", done);
+        URL.revokeObjectURL(url);
+        if (neuralAudioRef.current === element) neuralAudioRef.current = null;
         resolve();
       };
-      audio.addEventListener("ended", done);
-      audio.addEventListener("error", done);
-      void audio.play().catch(done);
+      element.addEventListener("ended", done);
+      element.addEventListener("error", done);
+      element.src = url;
+      void element.play().catch(done);
       if (utteranceTokenRef.current !== token) {
         // Generation was replaced while starting up; cut the audio immediately.
-        audio.pause();
-        audio.src = "";
+        element.pause();
+        element.removeAttribute("src");
         done();
       }
     });
@@ -269,9 +281,11 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
     // autoplay policy that silently rejects HTMLAudioElement.play().
     const ctx = getSharedAudioContext();
     if (ctx) {
-      resumeSharedAudioContext();
+      if (ctx.state !== "running") {
+        try { await ctx.resume(); } catch { /* fall through to the element */ }
+      }
       try {
-        const buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
+        const buffer = await decodeAudioData(ctx, await blob.arrayBuffer());
         if (utteranceTokenRef.current !== token) return;
         if (ctx.state === "running") {
           await new Promise<void>((resolve) => {

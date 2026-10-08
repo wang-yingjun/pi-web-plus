@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { getSharedAudioContext } from "@/lib/audio-context";
+import { getSharedAudioContext, unlockSharedAudioContext } from "@/lib/audio-context";
 
 function playTone(ctx: AudioContext) {
   const now = ctx.currentTime;
@@ -39,10 +39,10 @@ export function useAudio() {
 
   const unlockAudio = useCallback((force = false) => {
     if (!force && !enabledRef.current) return;
-    const ctx = getCtx();
-    if (!ctx || ctx.state !== "suspended") return;
-    ctx.resume().catch(() => {});
-  }, [getCtx]);
+    // Start a silent source as well as resuming: Safari only counts the context
+    // as unlocked once a source has run inside the user gesture.
+    unlockSharedAudioContext();
+  }, []);
 
   const toggle = useCallback(() => {
     const next = !enabledRef.current;
