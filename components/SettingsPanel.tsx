@@ -50,9 +50,9 @@ interface Props {
   /** Voice output state exposed in the General section. */
   voiceOutputSupported?: boolean;
   voiceOutputEnabled?: boolean;
-  onVoiceOutputToggle?: () => void;
+  onVoiceOutputToggle?: (next?: boolean) => void;
   voiceOutputAutoSpeak?: boolean;
-  onVoiceOutputAutoSpeakToggle?: () => void;
+  onVoiceOutputAutoSpeakToggle?: (next?: boolean) => void;
   voiceNeural?: boolean;
   onVoiceNeuralToggle?: () => void;
   voiceRate?: number;

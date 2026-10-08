@@ -109,14 +109,14 @@ interface Props {
   voiceOutputEnabled?: boolean;
   voiceOutputSupported?: boolean;
   voiceOutputSpeaking?: boolean;
-  onVoiceOutputToggle?: () => void;
+  onVoiceOutputToggle?: (next?: boolean) => void;
   onVoiceOutputStop?: () => void;
   /** Reads the newest assistant reply aloud right now (and enables output). */
   onVoiceOutputSpeakLatest?: () => void;
   /** Whether replies are automatically spoken (hands-free needs this on). */
   voiceOutputAutoSpeak?: boolean;
   /** Turns auto-speak on/off, owned by AppShell so Settings stays in sync. */
-  onVoiceOutputAutoSpeakToggle?: (next: boolean) => void;
+  onVoiceOutputAutoSpeakToggle?: (next?: boolean) => void;
   /** Speech-recognition language, owned by AppShell so Settings stays in sync. */
   voiceInputLocale?: VoiceLocale;
   onVoiceInputLocaleChange?: (locale: VoiceLocale) => void;
@@ -606,7 +606,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onBuiltinCommand,
   soundEnabled, onSoundToggle, onAudioUnlock,
   voiceOutputEnabled, voiceOutputSupported, voiceOutputSpeaking, onVoiceOutputToggle, onVoiceOutputStop, onVoiceOutputSpeakLatest,
-  voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle,
+  onVoiceOutputAutoSpeakToggle,
   voiceInputLocale, onVoiceInputLocaleChange, getCurrentSpeechText,
   onPromptWithStreamingBehavior,
   draftKey,
@@ -823,21 +823,26 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       stopVoiceInput();
       voiceBaseRef.current = null;
       lastDictationRef.current = "";
+      // Leaving hands-free returns to the silent defaults: replies are only
+      // read aloud again if the user turns auto-speak back on in settings.
+      onVoiceOutputAutoSpeakToggle?.(false);
       return;
     }
     handsFreeStartedRef.current = true;
     manualMicStopRef.current = false;
     setHandsFree(true);
     try { window.localStorage.setItem(VOICE_HANDS_FREE_KEY, "true"); } catch { /* best-effort */ }
-    // The loop is only complete when replies are spoken back.
-    if (voiceOutputAutoSpeak === false && onVoiceOutputAutoSpeakToggle) onVoiceOutputAutoSpeakToggle(true);
+    // Hands-free is the one mode that reads replies back: turn voice output on
+    // (if it is off) and auto-speak on. Leaving hands-free turns auto-speak off.
+    if (!voiceOutputEnabled) onVoiceOutputToggle?.(true);
+    onVoiceOutputAutoSpeakToggle?.(true);
     setVoiceError(null);
     const ta = textareaRef.current;
     const current = ta ? ta.value : valueRef.current;
     const caret = ta?.selectionStart ?? current.length;
     voiceBaseRef.current = { before: current.slice(0, caret), after: current.slice(caret) };
     startVoiceInput();
-  }, [stopVoiceInput, startVoiceInput, voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle]);
+  }, [stopVoiceInput, startVoiceInput, voiceOutputEnabled, onVoiceOutputToggle, onVoiceOutputAutoSpeakToggle]);
 
   // Hands-free keeps the microphone open at all times (streaming and playback
   // alike); speech during playback is filtered for echo in the transcript

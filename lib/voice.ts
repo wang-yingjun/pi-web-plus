@@ -10,7 +10,10 @@ export type VoiceLocale = (typeof VOICE_LOCALES)[number];
 /** localStorage keys, mirroring the existing `pi-sound-enabled` convention. */
 export const VOICE_INPUT_ENABLED_KEY = "pi-voice-input-enabled";
 export const VOICE_OUTPUT_ENABLED_KEY = "pi-voice-output-enabled";
-export const VOICE_AUTO_SPEAK_KEY = "pi-voice-auto-speak";
+// v2: auto-speak now follows the hands-free mode instead of persisting the
+// value hands-free forced on. The old key may hold a stale `true`, so it is
+// deliberately not read; the new key defaults to off.
+export const VOICE_AUTO_SPEAK_KEY = "pi-voice-auto-speak-v2";
 export const VOICE_RATE_KEY = "pi-voice-rate";
 export const VOICE_INPUT_LOCALE_KEY = "pi-voice-input-locale";
 export const VOICE_OUTPUT_VOICE_KEY = "pi-voice-output-voice";

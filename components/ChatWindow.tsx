@@ -74,10 +74,10 @@ interface Props {
   voiceOutputAutoSpeak?: boolean;
   voiceOutputSupported?: boolean;
   voiceOutputSpeaking?: boolean;
-  onVoiceOutputToggle?: () => void;
+  onVoiceOutputToggle?: (next?: boolean) => void;
   onVoiceOutputStop?: () => void;
   /** Turns auto-speak on/off, owned by AppShell so Settings stays in sync. */
-  onVoiceOutputAutoSpeakToggle?: (next: boolean) => void;
+  onVoiceOutputAutoSpeakToggle?: (next?: boolean) => void;
   speakAssistantReply?: (text: string) => void;
   /** Neural (Edge TTS) mode: enables sentence-by-sentence streaming speech. */
   voiceOutputNeural?: boolean;
@@ -323,7 +323,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
   );
 }
 
-export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, voiceOutputEnabled = false, voiceOutputAutoSpeak = true, voiceOutputSupported, voiceOutputSpeaking, onVoiceOutputToggle, onVoiceOutputStop, onVoiceOutputAutoSpeakToggle, speakAssistantReply, voiceOutputNeural, enqueueAssistantSpeech, finishAssistantSpeech, getCurrentSpeechText, voiceInputLocale, onVoiceInputLocaleChange }: Props) {
+export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, voiceOutputEnabled = false, voiceOutputAutoSpeak = false, voiceOutputSupported, voiceOutputSpeaking, onVoiceOutputToggle, onVoiceOutputStop, onVoiceOutputAutoSpeakToggle, speakAssistantReply, voiceOutputNeural, enqueueAssistantSpeech, finishAssistantSpeech, getCurrentSpeechText, voiceInputLocale, onVoiceInputLocaleChange }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const completionNotificationsEnabled = session?.relation?.kind !== "subagent";

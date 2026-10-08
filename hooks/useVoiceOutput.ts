@@ -51,8 +51,8 @@ export interface UseVoiceOutputResult {
   onVoiceChange: (voice: AvailableVoice | null) => void;
   /** Read a short sample with a given voice without changing the setting. */
   previewVoice: (voice: AvailableVoice) => void;
-  onToggle: () => void;
-  onAutoSpeakToggle: () => void;
+  onToggle: (next?: boolean) => void;
+  onAutoSpeakToggle: (next?: boolean) => void;
   onNeuralToggle: () => void;
   onRateChange: (rate: number) => void;
   speak: (text: string) => void;
@@ -563,27 +563,27 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
     speak(pending);
   }, [voicesReady, speak]);
 
-  const onToggle = useCallback(() => {
-    const next = !enabledRef.current;
-    enabledRef.current = next;
+  const onToggle = useCallback((next?: boolean) => {
+    const value = typeof next === "boolean" ? next : !enabledRef.current;
+    enabledRef.current = value;
     try {
-      window.localStorage.setItem(VOICE_OUTPUT_ENABLED_KEY, String(next));
+      window.localStorage.setItem(VOICE_OUTPUT_ENABLED_KEY, String(value));
     } catch {
       // Persisting is best-effort.
     }
-    setEnabled(next);
-    if (!next) stop();
+    setEnabled(value);
+    if (!value) stop();
   }, [stop]);
 
-  const onAutoSpeakToggle = useCallback(() => {
+  const onAutoSpeakToggle = useCallback((next?: boolean) => {
     setAutoSpeak((current) => {
-      const next = !current;
+      const value = typeof next === "boolean" ? next : !current;
       try {
-        window.localStorage.setItem(VOICE_AUTO_SPEAK_KEY, String(next));
+        window.localStorage.setItem(VOICE_AUTO_SPEAK_KEY, String(value));
       } catch {
         // Persisting is best-effort.
       }
-      return next;
+      return value;
     });
   }, []);
 
