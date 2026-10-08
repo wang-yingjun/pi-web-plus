@@ -94,6 +94,12 @@ export function useVoiceInput({ locale = readStoredVoiceInputLocale(), onTranscr
   // (silence timeouts, tab switches), and we only restart while this is true.
   const wantListeningRef = useRef(false);
   const finalTranscriptRef = useRef("");
+  // Finalized text from engine sessions that already ended. The engine resets
+  // its own result list on every (re)start, so this carries earlier text over.
+  const sessionBaseRef = useRef("");
+  // Results are only accepted between onstart and onend. A late final from a
+  // session that already ended would otherwise be appended a second time.
+  const activeRef = useRef(false);
   const onTranscriptRef = useRef(onTranscript);
   const onErrorRef = useRef(onError);
   const localeRef = useRef<VoiceLocale>(locale);
@@ -111,20 +117,28 @@ export function useVoiceInput({ locale = readStoredVoiceInputLocale(), onTranscr
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
+      activeRef.current = true;
+      sessionBaseRef.current = finalTranscriptRef.current;
       setListening(true);
     };
     recognition.onresult = (event) => {
-      let finalText = finalTranscriptRef.current;
+      // A result arriving after the engine ended belongs to a previous session;
+      // dropping it stops the same words being added twice across a pause.
+      if (!activeRef.current) return;
+      // Rebuild the current session's finals from the engine's own result list
+      // instead of appending, so a re-delivered final is idempotent.
+      let sessionFinal = "";
       let interimText = "";
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      for (let i = 0; i < event.results.length; i += 1) {
         const result = event.results[i];
         const transcript = result[0]?.transcript ?? "";
         if (result.isFinal) {
-          finalText += transcript;
+          sessionFinal += transcript;
         } else {
           interimText += transcript;
         }
       }
+      const finalText = sessionBaseRef.current + sessionFinal;
       finalTranscriptRef.current = finalText;
       setInterim(interimText);
       const composed = composeTranscript(finalText, interimText);
@@ -141,6 +155,7 @@ export function useVoiceInput({ locale = readStoredVoiceInputLocale(), onTranscr
       }
     };
     recognition.onend = () => {
+      activeRef.current = false;
       if (wantListeningRef.current) {
         // The engine stopped on its own; start a fresh utterance so a short
         // pause does not end the whole dictation session.
@@ -163,6 +178,7 @@ export function useVoiceInput({ locale = readStoredVoiceInputLocale(), onTranscr
     if (!recognition) return;
     recognition.lang = localeRef.current;
     finalTranscriptRef.current = "";
+    sessionBaseRef.current = "";
     setInterim("");
     wantListeningRef.current = true;
     try {
@@ -188,7 +204,18 @@ export function useVoiceInput({ locale = readStoredVoiceInputLocale(), onTranscr
 
   const reset = useCallback(() => {
     finalTranscriptRef.current = "";
+    sessionBaseRef.current = "";
     setInterim("");
+    // Drop the engine's buffered results too, so text we just consumed (e.g.
+    // after a hands-free auto-send) cannot be re-delivered into the next turn.
+    const recognition = recognitionRef.current;
+    if (recognition && wantListeningRef.current) {
+      try {
+        recognition.abort();
+      } catch {
+        // Not started; nothing to reset.
+      }
+    }
   }, []);
 
   const toggle = useCallback(() => {
@@ -211,6 +238,7 @@ export function useVoiceInput({ locale = readStoredVoiceInputLocale(), onTranscr
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);
       wantListeningRef.current = false;
+      activeRef.current = false;
       const recognition = recognitionRef.current;
       if (recognition) {
         recognition.onresult = null;

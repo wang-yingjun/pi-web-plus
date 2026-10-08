@@ -68,7 +68,7 @@ interface Props {
   soundEnabled?: boolean;
   onSoundToggle?: () => void;
   playDoneSound?: () => void;
-  unlockAudio?: () => void;
+  unlockAudio?: (force?: boolean) => void;
   /** Voice output (text-to-speech) state + controls, owned by AppShell. */
   voiceOutputEnabled?: boolean;
   voiceOutputAutoSpeak?: boolean;

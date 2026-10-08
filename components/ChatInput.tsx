@@ -104,7 +104,7 @@ interface Props {
   onBuiltinCommand?: (message: string) => Promise<BuiltinSlashCommandResult>;
   soundEnabled?: boolean;
   onSoundToggle?: () => void;
-  onAudioUnlock?: () => void;
+  onAudioUnlock?: (force?: boolean) => void;
   /** Voice output (text-to-speech) master switch, rendered as a speaker button. */
   voiceOutputEnabled?: boolean;
   voiceOutputSupported?: boolean;
@@ -793,6 +793,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [voiceInputMenuOpen]);
 
   const handleVoiceToggle = useCallback(() => {
+    // A click is a user gesture: unlock shared audio so TTS is not blocked by
+    // the browser autoplay policy when a reply is read later.
+    onAudioUnlock?.(true);
     // Barge-in: while the reply is being spoken, a mic click interrupts it and
     // the hands-free resume effect restarts listening.
     if (voiceOutputSpeaking) {
@@ -813,9 +816,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const caret = ta?.selectionStart ?? current.length;
     voiceBaseRef.current = { before: current.slice(0, caret), after: current.slice(caret) };
     toggleVoiceInput();
-  }, [stopVoiceInput, toggleVoiceInput, voiceListening, voiceOutputSpeaking, onVoiceOutputStop]);
+  }, [stopVoiceInput, toggleVoiceInput, voiceListening, voiceOutputSpeaking, onVoiceOutputStop, onAudioUnlock]);
 
   const handleHandsFreeToggle = useCallback(() => {
+    // This click is the user gesture that lets the shared AudioContext resume,
+    // so neural TTS is audible instead of blocked by the autoplay policy.
+    onAudioUnlock?.(true);
     if (handsFreeRef.current) {
       handsFreeStartedRef.current = false;
       setHandsFree(false);
@@ -842,7 +848,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const caret = ta?.selectionStart ?? current.length;
     voiceBaseRef.current = { before: current.slice(0, caret), after: current.slice(caret) };
     startVoiceInput();
-  }, [stopVoiceInput, startVoiceInput, voiceOutputEnabled, onVoiceOutputToggle, onVoiceOutputAutoSpeakToggle]);
+  }, [stopVoiceInput, startVoiceInput, voiceOutputEnabled, onVoiceOutputToggle, onVoiceOutputAutoSpeakToggle, onAudioUnlock]);
 
   // Hands-free keeps the microphone open at all times (streaming and playback
   // alike); speech during playback is filtered for echo in the transcript
@@ -3139,6 +3145,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 type="button"
                 onClick={() => {
                   if (voiceOutputSpeaking) { onVoiceOutputStop?.(); return; }
+                  onAudioUnlock?.(true);
                   // A click always acts immediately: enable output and read the
                   // newest reply, rather than only flipping a switch that waits
                   // for the next turn (which made it look unresponsive).
