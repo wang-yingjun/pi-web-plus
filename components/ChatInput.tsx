@@ -148,6 +148,11 @@ const TOOL_PRESET_MAP: Record<ToolPresetLabel, ToolPreset> = {
   full: "full",
 };
 const COMPOSITION_END_ENTER_GRACE_MS = 100;
+// After a hands-free auto-send, the speech engine can re-deliver the same final
+// transcript (our buffer was reset, its own result list was not). Ignore an
+// identical utterance that arrives within this window so it is neither retyped
+// into the composer nor sent a second time.
+const VOICE_HANDS_FREE_DUPLICATE_MS = 5000;
 const TEXT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const ANCHORED_MENU_GAP = 8;
 
@@ -694,6 +699,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const manualMicStopRef = useRef(false);
   const lastVoiceActivityRef = useRef(0);
   const lastDictationRef = useRef("");
+  // Last hands-free utterance that was auto-sent, normalized for comparison.
+  const lastSentVoiceRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
   const lastBargeInRef = useRef(0);
   const autoSendRef = useRef<() => void>(() => {});
   const getCurrentSpeechTextRef = useRef(getCurrentSpeechText);
@@ -703,6 +710,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSteerRef.current = onSteer;
 
   const applyVoiceTranscript = useCallback((transcript: string) => {
+    // The recognition engine can re-deliver the final result we just sent: the
+    // silence auto-send clears our buffer but not the engine's own result list.
+    // Dropping that repeat stops the same utterance being typed and sent again.
+    if (handsFreeRef.current) {
+      const normalized = normalizeForEcho(transcript);
+      const lastSent = lastSentVoiceRef.current;
+      if (normalized && normalized === lastSent.text && Date.now() - lastSent.at < VOICE_HANDS_FREE_DUPLICATE_MS) return;
+    }
     if (handsFreeRef.current && speakingRef.current) {
       // Microphone stays open while the assistant speaks: drop its own voice
       // (echo), and barge in on real user speech.
@@ -858,6 +873,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       lastDictationRef.current = "";
       lastVoiceActivityRef.current = 0;
       resetVoiceInput();
+      lastSentVoiceRef.current = { text: normalizeForEcho(text), at: Date.now() };
       if (isStreamingRef.current) {
         // The agent is still working: insert the user's words as steering.
         if (onSteerRef.current) {
