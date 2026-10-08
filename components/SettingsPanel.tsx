@@ -507,7 +507,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
   );
 }
 
-export function SettingsPanel({ cwd, sessionId, initialSection, onClose, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange }: Props) {
+export function SettingsPanel({ cwd, sessionId, initialSection, onClose, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange, voiceOutputSupported, voiceOutputEnabled, onVoiceOutputToggle, voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle, voiceNeural, onVoiceNeuralToggle, voiceNeuralVoice, onVoiceNeuralVoiceChange, onVoiceNeuralVoicePreview, voiceRate, onVoiceRateChange, voiceInputLocale, onVoiceInputLocaleChange, voiceOptions, selectedVoiceURI, onVoiceSelect, onVoicePreview }: Props) {
   const { t } = useI18n();
   const [section, setSection] = useState<SettingsSection>(initialSection);
   const [mountedSections, setMountedSections] = useState<ReadonlySet<SettingsSection>>(
@@ -603,7 +603,7 @@ export function SettingsPanel({ cwd, sessionId, initialSection, onClose, onSessi
         </div>
 
         <main className="settings-dialog-main">
-          {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} />)}
+          {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} voiceOutputSupported={voiceOutputSupported} voiceOutputEnabled={voiceOutputEnabled} onVoiceOutputToggle={onVoiceOutputToggle} voiceOutputAutoSpeak={voiceOutputAutoSpeak} onVoiceOutputAutoSpeakToggle={onVoiceOutputAutoSpeakToggle} voiceNeural={voiceNeural} onVoiceNeuralToggle={onVoiceNeuralToggle} voiceNeuralVoice={voiceNeuralVoice} onVoiceNeuralVoiceChange={onVoiceNeuralVoiceChange} onVoiceNeuralVoicePreview={onVoiceNeuralVoicePreview} voiceRate={voiceRate} onVoiceRateChange={onVoiceRateChange} voiceInputLocale={voiceInputLocale} onVoiceInputLocaleChange={onVoiceInputLocaleChange} voiceOptions={voiceOptions} selectedVoiceURI={selectedVoiceURI} onVoiceSelect={onVoiceSelect} onVoicePreview={onVoicePreview} />)}
           {sectionHost("models", <ModelsConfig embedded cwd={cwd} onClose={onClose} />)}
           {cwd && sectionHost("skills", <SkillsConfig embedded key={cwd} cwd={cwd} onClose={onClose} />)}
           {cwd && sectionHost("agents", <AgentsConfig embedded key={cwd} cwd={cwd} sessionId={sessionId} onClose={onClose} onReloaded={onSessionReloaded} />)}
