@@ -1,3 +1,18 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Port of the Sec-MS-GEC v2 token generator from rany2/edge-tts:
+//   https://github.com/rany2/edge-tts  (edge_tts/drm.py)
+//   Copyright (C) rany and edge-tts contributors
+//   Licensed under the GNU Lesser General Public License v3.0 or later.
+//   Source of the file this was ported from is available at the URL above;
+//   this repository's copy carries the provenance and license statements
+//   required by LGPL-3.0 §4/§6 (see THIRD_PARTY_NOTICES.md).
+//
+// This file is licensed to the project under LGPL-3.0-or-later and is the only
+// such file in pi-web; everything else in the repository is MIT. It is used
+// here as an independently replaceable module (see installEdgeTtsSynthUrl() in
+// ./edge-tts-endpoint.ts) and can be swapped out for an upstream implementation
+// without touching the rest of the codebase.
 import { Buffer } from "node:buffer";
 
 /**
@@ -10,14 +25,9 @@ import { Buffer } from "node:buffer";
  * built-in voices.
  *
  * This is a faithful port of the reference implementation in
- * `edge_tts/drm.py` from https://github.com/rany2/edge-tts (LGPLv3). The
+ * `edge_tts/drm.py` from https://github.com/rany2/edge-tts. The
  * algorithm is a modified SHA-256 plus a custom "CS64" mixer. BigInteger
  * arithmetic is used throughout so the 64-bit intermediate products stay exact.
- *
- * NOTE ON LICENSING: this file is derived from LGPLv3 code while pi-web is MIT.
- * If pi-web is redistributed, this module should be replaced by an upstream fix
- * in `msedge-tts` (or the token fetched some other way); see
- * `installEdgeTtsSynthUrl()` in ./edge-tts-endpoint.ts.
  */
 
 const MASK = BigInt(0xFFFFFFFF);
