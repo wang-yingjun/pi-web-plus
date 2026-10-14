@@ -1,7 +1,13 @@
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 import { Readable } from "node:stream";
+import { installEdgeTtsSynthUrl } from "@/lib/edge-tts-endpoint";
 
 export const runtime = "nodejs";
+
+// Point msedge-tts at Microsoft's current synthesis endpoint; the legacy one it
+// defaults to answers every handshake with HTTP 403, which is what made replies
+// fall back to the browser's built-in voices. See lib/edge-tts-endpoint.ts.
+installEdgeTtsSynthUrl();
 
 /** Microsoft Edge neural voices, exposed through the Edge Read Aloud API for free. */
 const VOICE_PATTERN = /^[a-z]{2,3}-[A-Za-z]{2,4}-[A-Za-z]+Neural$/i;
@@ -10,42 +16,82 @@ const MAX_TEXT_LENGTH = 2000;
 
 /**
  * Warm connection pool keyed by voice. Opening the Edge WebSocket costs
- * several hundred milliseconds, so reusing a live connection keeps per-request
- * latency to synthesis time only. An instance handles one request at a time;
- * concurrent requests get a fresh (temporary) instance.
+ * several hundred milliseconds, so a live connection is reused to keep latency
+ * to synthesis time. An instance handles one request at a time; a request that
+ * arrives while the warm instance is busy gets a temporary connection, which is
+ * closed as soon as its stream ends.
+ *
+ * Note: do NOT add a lock here. A synthesis stream that stalls without emitting
+ * `end`/`error` would hold the lock forever and wedge every later request for
+ * that voice. Microsoft's `speech.platform.bing.com` endpoint accepts the
+ * extra connection, so concurrency needs no serialization.
  */
-const pool = new Map<string, { tts: MsEdgeTTS; inflight: number }>();
+interface PoolEntry {
+  tts: MsEdgeTTS;
+  inflight: number;
+}
 
-async function acquireTTS(voice: string): Promise<MsEdgeTTS> {
+interface Lease {
+  tts: MsEdgeTTS;
+  /** Return the connection to the pool (or close a temporary one). Idempotent. */
+  release: () => void;
+  /** Drop the broken connection so the next request opens a fresh one. */
+  invalidate: () => void;
+}
+
+const pool = new Map<string, PoolEntry>();
+
+async function acquireTTS(voice: string): Promise<Lease> {
   const entry = pool.get(voice);
   if (entry && entry.inflight === 0) {
     entry.inflight += 1;
-    return entry.tts;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      entry.inflight = Math.max(0, entry.inflight - 1);
+    };
+    return {
+      tts: entry.tts,
+      release: finish,
+      invalidate: () => {
+        if (pool.get(voice) === entry) pool.delete(voice);
+        try { entry.tts.close(); } catch { /* already closed */ }
+        finish();
+      },
+    };
   }
+  // Either no connection yet, or the warm one is busy. Set up a standalone
+  // instance; it becomes the pool's warm connection only if the slot is still
+  // empty once metadata is ready.
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-  if (!entry) {
-    pool.set(voice, { tts, inflight: 1 });
-  } else {
-    // Warm instance busy: hand out a temporary one; it is closed after use.
-    return tts;
+  if (!entry && !pool.has(voice)) {
+    const created: PoolEntry = { tts, inflight: 1 };
+    pool.set(voice, created);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      created.inflight = Math.max(0, created.inflight - 1);
+    };
+    return {
+      tts,
+      release: finish,
+      invalidate: () => {
+        if (pool.get(voice) === created) pool.delete(voice);
+        try { tts.close(); } catch { /* already closed */ }
+        finish();
+      },
+    };
   }
-  return tts;
-}
-
-function releaseTTS(voice: string, tts: MsEdgeTTS) {
-  const entry = pool.get(voice);
-  if (entry && entry.tts === tts) {
-    entry.inflight -= 1;
-    return;
-  }
-  try { tts.close(); } catch { /* temporary instance */ }
-}
-
-function invalidateTTS(voice: string, tts: MsEdgeTTS) {
-  const entry = pool.get(voice);
-  try { tts.close(); } catch { /* already closed */ }
-  if (entry && entry.tts === tts) pool.delete(voice);
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    try { tts.close(); } catch { /* already closed */ }
+  };
+  return { tts, release: finish, invalidate: finish };
 }
 
 export async function POST(request: Request) {
@@ -72,14 +118,23 @@ export async function POST(request: Request) {
     ? `${ratePct >= 0 ? "+" : ""}${Math.round(ratePct)}%`
     : "+0%";
 
-  const tts = await acquireTTS(voice);
+  let lease: Lease;
   try {
-    const { audioStream } = tts.toStream(text, { rate });
-    audioStream.on("end", () => releaseTTS(voice, tts));
-    audioStream.on("error", () => invalidateTTS(voice, tts));
+    lease = await acquireTTS(voice);
+  } catch (error) {
+    // Connection/setup failure (network, rate limit, bad voice) — the client
+    // falls back to a browser voice, as with any failed synthesis.
+    console.error("Edge TTS connection failed:", error);
+    return new Response(JSON.stringify({ error: "speech synthesis failed" }), { status: 502 });
+  }
+  try {
+    const { audioStream } = lease.tts.toStream(text, { rate });
+    audioStream.on("end", () => lease.release());
+    audioStream.on("close", () => lease.release());
+    audioStream.on("error", () => lease.invalidate());
     request.signal.addEventListener("abort", () => {
       audioStream.destroy();
-      releaseTTS(voice, tts);
+      lease.release();
     });
     return new Response(Readable.toWeb(audioStream) as ReadableStream<Uint8Array>, {
       headers: {
@@ -88,7 +143,7 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
-    invalidateTTS(voice, tts);
+    lease.invalidate();
     console.error("Edge TTS synthesis failed:", error);
     return new Response(JSON.stringify({ error: "speech synthesis failed" }), { status: 502 });
   }
