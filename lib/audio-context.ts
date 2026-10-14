@@ -63,6 +63,29 @@ export function resumeSharedAudioContext(): void {
   }
 }
 
+let gestureUnlockInstalled = false;
+
+/**
+ * Unlock the shared context on the first real user interaction anywhere in the
+ * app. Hands-free mode is persisted across reloads, so a user can start a
+ * conversation without ever clicking a specific button; without this the
+ * AudioContext stays suspended and neural TTS plays silently, even though the
+ * server synthesized it fine. Any click, tap or key press counts.
+ */
+export function installAudioUnlockOnFirstGesture(): void {
+  if (typeof window === "undefined" || gestureUnlockInstalled) return;
+  gestureUnlockInstalled = true;
+  const unlock = () => {
+    unlockSharedAudioContext();
+    window.removeEventListener("pointerdown", unlock);
+    window.removeEventListener("keydown", unlock);
+    window.removeEventListener("touchstart", unlock);
+  };
+  window.addEventListener("pointerdown", unlock, { passive: true });
+  window.addEventListener("keydown", unlock);
+  window.addEventListener("touchstart", unlock, { passive: true });
+}
+
 /**
  * `decodeAudioData` that works with both the promise signature and the older
  * callback-only one Safari used.

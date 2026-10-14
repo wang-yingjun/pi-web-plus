@@ -134,6 +134,9 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
   // utterances) — used for echo detection while the microphone stays open.
   const currentChunkRef = useRef("");
   const browserPendingRef = useRef<string[]>([]);
+  // Browser-speech fallback for the neural queue, wired up after
+  // `enqueueBrowser` is defined (kept in a ref to avoid a use-before-define).
+  const browserFallbackRef = useRef<(chunk: string) => void>(() => {});
 
   // Restore the persisted speech rate once on mount.
   useEffect(() => {
@@ -265,8 +268,8 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
     }
   }, []);
 
-  const playNeuralBlob = useCallback(async (blob: Blob, token: number): Promise<void> => {
-    const fallback = () => new Promise<void>((resolve) => {
+  const playNeuralBlob = useCallback(async (blob: Blob, token: number): Promise<boolean> => {
+    const fallback = () => new Promise<boolean>((resolve) => {
       let audio = neuralFallbackRef.current;
       if (!audio) {
         audio = new Audio();
@@ -276,36 +279,46 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
       const element = audio;
       neuralAudioRef.current = element;
       const url = URL.createObjectURL(blob);
-      const done = () => {
-        element.removeEventListener("ended", done);
-        element.removeEventListener("error", done);
+      let settled = false;
+      const done = (played: boolean) => {
+        if (settled) return;
+        settled = true;
+        element.removeEventListener("ended", onEnded);
+        element.removeEventListener("error", onError);
         URL.revokeObjectURL(url);
         if (neuralAudioRef.current === element) neuralAudioRef.current = null;
-        resolve();
+        resolve(played);
       };
-      element.addEventListener("ended", done);
-      element.addEventListener("error", done);
+      const onEnded = () => done(true);
+      const onError = () => done(false);
+      element.addEventListener("ended", onEnded);
+      element.addEventListener("error", onError);
       element.src = url;
-      void element.play().catch(done);
-      if (utteranceTokenRef.current !== token) {
-        // Generation was replaced while starting up; cut the audio immediately.
-        element.pause();
-        element.removeAttribute("src");
-        done();
-      }
+      void element.play().then(() => {
+        if (utteranceTokenRef.current !== token) {
+          // Generation was replaced while starting up; cut the audio.
+          element.pause();
+          element.removeAttribute("src");
+          done(true);
+        }
+      }).catch(() => done(false));
     });
-    // Primary path: Web Audio. Once the shared context is running (unlocked
-    // by any user gesture), playback is not subject to the per-element
-    // autoplay policy that silently rejects HTMLAudioElement.play().
+    // Prefer Safari's native media pipeline for MP3 speech. Web Audio can
+    // report `running` while producing no audible output on some Safari audio
+    // routes; the HTMLAudioElement path is the same path Safari uses for
+    // ordinary media and is more reliable here. Web Audio remains fallback.
+    const mediaPlayed = await fallback();
+    if (mediaPlayed) return true;
+
     const ctx = getSharedAudioContext();
     if (ctx) {
       if (ctx.state !== "running") {
-        try { await ctx.resume(); } catch { /* fall through to the element */ }
+        try { await ctx.resume(); } catch { /* still suspended */ }
       }
-      try {
-        const buffer = await decodeAudioData(ctx, await blob.arrayBuffer());
-        if (utteranceTokenRef.current !== token) return;
-        if (ctx.state === "running") {
+      if (ctx.state === "running") {
+        try {
+          const buffer = await decodeAudioData(ctx, await blob.arrayBuffer());
+          if (utteranceTokenRef.current !== token) return true;
           await new Promise<void>((resolve) => {
             const source = ctx.createBufferSource();
             source.buffer = buffer;
@@ -322,14 +335,19 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
             }
             source.start();
           });
-          return;
+          return true;
+        } catch {
+          // decodeAudioData failed (bad data, Safari quirks); fall through to
+          // the media-element fallback.
         }
-      } catch {
-        // decodeAudioData failed (bad data, Safari quirks); fall through to
-        // the media-element fallback.
+      } else {
+        // Safari blocks Web Audio until a user gesture, and a fresh media
+        // element is autoplay-blocked too. Report failure so the caller reads
+        // the chunk with the browser speech engine instead of going silent.
+        return false;
       }
     }
-    await fallback();
+    return false;
   }, []);
 
   /**
@@ -369,9 +387,12 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
         if (blob === null) {
           // Synthesis failed (server unreachable, Edge API down, …); read
           // this chunk with the browser voice and keep draining the queue.
-          queueBrowserSpeech([chunk]);
+          browserFallbackRef.current(chunk);
         } else {
-          await playNeuralBlob(blob, token);
+          const played = await playNeuralBlob(blob, token);
+          // Web Audio blocked (e.g. Safari before the first gesture): use the
+          // browser voice for this chunk rather than leaving a silent gap.
+          if (!played) browserFallbackRef.current(chunk);
         }
         currentChunkRef.current = "";
       }
@@ -423,6 +444,9 @@ export function useVoiceOutput({ locale }: UseVoiceOutputOptions): UseVoiceOutpu
       synth.speak(utterance);
     });
   }, []);
+  // Wire the neural queue's fallback to the append-style browser queue so
+  // several failed chunks queue up instead of cancelling each other.
+  browserFallbackRef.current = (chunk) => enqueueBrowser([chunk]);
 
   /** Appends sentences to the live queue without interrupting playback. */
   const enqueueSpeech = useCallback((text: string) => {
