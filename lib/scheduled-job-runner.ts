@@ -21,6 +21,22 @@ import {
 const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const TICK_INTERVAL_MS = 30_000;
 
+/**
+ * Cross-model fallback for scheduled runs, in the order the owner asked for.
+ * A job's own model is tried first when configured; this list only supplies the
+ * fallbacks, so a provider quota (429) or outage cannot fail the whole run.
+ */
+const FALLBACK_JOB_MODELS: Array<{ provider: string; modelId: string }> = [
+  { provider: "deepseek", modelId: "deepseek-flash" },
+  { provider: "ark", modelId: "glm-5.3" },
+  { provider: "ark", modelId: "deepseek-v4.1-flash" },
+  { provider: "gpt-relay", modelId: "gpt-6.1-sol" },
+];
+
+function isRetryableModelError(message: string): boolean {
+  return /429|quota|rate.?limit|resource.?exhausted|50[0-9]|unavailable|overloaded|timeout|fetch failed|network|ECONNRESET|ECONNREFUSED|ENOTFOUND|socket hang|model not found|not applied|超时|额度|不可用/i.test(message);
+}
+
 // Jobs currently running in this process, so the scheduler does not double-fire.
 const runningJobIds = new Set<string>();
 
@@ -181,93 +197,152 @@ export async function runScheduledJob(id: string, trigger: "schedule" | "manual"
   }
 
   let sessionId: string | null = null;
-  try {
-    const cwd = resolveRunCwd(job);
-    let session;
-    const previous = await resolvePreviousJobSession(job);
-    if (previous) {
-      // Continue the job's shared conversation; a dead registry entry is fine
-      // because startRpcSession reopens the persisted transcript.
-      const started = await startRpcSession(previous.sessionId, previous.sessionFile, undefined, {
-        suppressCompletionNotifications: true,
-        ...(job.model ? { initialModel: job.model } : {}),
-      });
-      session = started.session;
-      sessionId = started.realSessionId;
-    } else {
-      const tempKey = `__job__${randomUUID()}`;
-      const started = await startRpcSession(tempKey, "", cwd, {
-        suppressCompletionNotifications: true,
-        ...(job.model ? { initialModel: job.model } : {}),
-      });
-      session = started.session;
-      sessionId = started.realSessionId;
-      try {
-        await session.send({ type: "set_session_name", name: job.name });
-      } catch {
-        // A rename failure must not abort the run itself.
+  // Candidate order: the job's configured model first, then cross-provider
+  // fallbacks. A job with no model override only ever gets `null`, which means
+  // "leave the session's own model (or the app default) alone".
+  const candidateModels: Array<{ provider: string; modelId: string } | null> = [];
+  if (job.model) {
+    candidateModels.push(job.model);
+    for (const fallback of FALLBACK_JOB_MODELS) {
+      if (!candidateModels.some((entry) => entry?.provider === fallback.provider && entry?.modelId === fallback.modelId)) {
+        candidateModels.push(fallback);
       }
     }
-    invalidateSessionListCache();
+  } else {
+    candidateModels.push(null);
+  }
+  try {
+    let lastError = "";
+    for (const candidateModel of candidateModels) {
+      try {
+        const cwd = resolveRunCwd(job);
+        let session;
+        const previous = await resolvePreviousJobSession(job);
+        if (previous) {
+          // Continue the job's shared conversation; a dead registry entry is fine
+          // because startRpcSession reopens the persisted transcript.
+          const started = await startRpcSession(previous.sessionId, previous.sessionFile, undefined, {
+            suppressCompletionNotifications: true,
+            ...(candidateModel ? { initialModel: candidateModel } : {}),
+          });
+          session = started.session;
+          sessionId = started.realSessionId;
+        } else {
+          const tempKey = `__job__${randomUUID()}`;
+          const started = await startRpcSession(tempKey, "", cwd, {
+            suppressCompletionNotifications: true,
+            ...(candidateModel ? { initialModel: candidateModel } : {}),
+          });
+          session = started.session;
+          sessionId = started.realSessionId;
+          try {
+            await session.send({ type: "set_session_name", name: job.name });
+          } catch {
+            // A rename failure must not abort the run itself.
+          }
+        }
+        invalidateSessionListCache();
 
-    const completion = waitForPromptDone(
-      { onEvent: (listener) => session.onEvent(listener), sessionId: sessionId ?? "", sessionFile: session.sessionFile },
-      RUN_TIMEOUT_MS,
-    );
-    await session.send({ type: "prompt", message: job.prompt });
-    await completion;
+        // When a job continues an existing session, `startRpcSession` restores
+        // that transcript's own saved model and ignores `initialModel`. Apply
+        // the model the panel shows explicitly, or the run silently keeps the
+        // session's old model and the two disagree (the reported bug).
+        if (candidateModel) {
+          try {
+            await session.send({
+              type: "set_model",
+              provider: candidateModel.provider,
+              modelId: candidateModel.modelId,
+            });
+          } catch (modelError) {
+            throw new Error(
+              `model unavailable ${candidateModel.provider}/${candidateModel.modelId}: ${modelError instanceof Error ? modelError.message : String(modelError)}`,
+            );
+          }
+        }
 
-    const { summary, error: runError } = readLatestAssistantResult(session.sessionFile);
-    let model: JobRun["model"] = null;
-    try {
-      const state = await session.send({ type: "get_state" }) as { model?: { id: string; provider: string } };
-      if (state?.model) model = { provider: state.model.provider, modelId: state.model.id };
-    } catch {
-      // Model metadata is best-effort.
-    }
+        const completion = waitForPromptDone(
+          { onEvent: (listener) => session.onEvent(listener), sessionId: sessionId ?? "", sessionFile: session.sessionFile },
+          RUN_TIMEOUT_MS,
+        );
+        await session.send({ type: "prompt", message: job.prompt });
+        await completion;
 
-    if (runError) {
-      await mutateScheduledJobsState((state) => {
-        const target = state.jobs.find((entry) => entry.id === id);
-        if (!target) return;
-        completeJobRun(target, run.id, {
-          status: "error",
-          summary: "",
-          error: runError,
-          sessionId,
-          model,
-          finishedAt: nowIso(),
+        const { summary, error: runError } = readLatestAssistantResult(session.sessionFile);
+        let model: JobRun["model"] = null;
+        try {
+          const state = await session.send({ type: "get_state" }) as { model?: { id: string; provider: string } };
+          if (state?.model) model = { provider: state.model.provider, modelId: state.model.id };
+        } catch {
+          // Model metadata is best-effort.
+        }
+
+        // Never report success with a model other than the one requested: if
+        // the request was not honored, treat it as a candidate failure so the
+        // fallback chain can try again instead of hiding the mismatch.
+        if (candidateModel && model && (
+          model.provider !== candidateModel.provider || model.modelId !== candidateModel.modelId
+        )) {
+          lastError = `model ${candidateModel.provider}/${candidateModel.modelId} was not applied (session used ${model.provider}/${model.modelId})`;
+          continue;
+        }
+
+        if (runError) {
+          // A provider failure is worth another model; a real task error is not.
+          if (isRetryableModelError(runError)) {
+            lastError = runError;
+            continue;
+          }
+          await mutateScheduledJobsState((state) => {
+            const target = state.jobs.find((entry) => entry.id === id);
+            if (!target) return;
+            completeJobRun(target, run.id, {
+              status: "error",
+              summary: "",
+              error: runError,
+              sessionId,
+              model,
+              finishedAt: nowIso(),
+            });
+            recomputeNext(target);
+          });
+          return { run: getRun(id, run.id), error: runError };
+        }
+
+        await mutateScheduledJobsState((state) => {
+          const target = state.jobs.find((entry) => entry.id === id);
+          if (!target) return;
+          completeJobRun(target, run.id, {
+            status: "success",
+            summary,
+            error: null,
+            sessionId,
+            model,
+            finishedAt: nowIso(),
+          });
+          recomputeNext(target);
         });
-        recomputeNext(target);
-      });
-      return { run: getRun(id, run.id), error: runError };
-    }
 
-    await mutateScheduledJobsState((state) => {
-      const target = state.jobs.find((entry) => entry.id === id);
-      if (!target) return;
-      completeJobRun(target, run.id, {
-        status: "success",
-        summary,
-        error: null,
-        sessionId,
-        model,
-        finishedAt: nowIso(),
-      });
-      recomputeNext(target);
-    });
-
-    try {
-      await notifyScheduledJob({
-        jobId: id,
-        jobName: job.name,
-        sessionId,
-        summary,
-      });
-    } catch {
-      // Push failures are non-fatal.
+        try {
+          await notifyScheduledJob({
+            jobId: id,
+            jobName: job.name,
+            sessionId,
+            summary,
+          });
+        } catch {
+          // Push failures are non-fatal.
+        }
+        return { run: getRun(id, run.id) };
+      } catch (candidateError) {
+        // A retryable provider failure moves on to the next model; anything
+        // else is the job's own failure and must not be retried silently.
+        const message = candidateError instanceof Error ? candidateError.message : String(candidateError);
+        lastError = message;
+        if (!isRetryableModelError(message)) throw candidateError;
+      }
     }
-    return { run: getRun(id, run.id) };
+    throw new Error(lastError || "所有候选模型均不可用");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await mutateScheduledJobsState((state) => {

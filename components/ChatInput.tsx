@@ -104,19 +104,19 @@ interface Props {
   onBuiltinCommand?: (message: string) => Promise<BuiltinSlashCommandResult>;
   soundEnabled?: boolean;
   onSoundToggle?: () => void;
-  onAudioUnlock?: (force?: boolean) => void;
+  onAudioUnlock?: () => void;
   /** Voice output (text-to-speech) master switch, rendered as a speaker button. */
   voiceOutputEnabled?: boolean;
   voiceOutputSupported?: boolean;
   voiceOutputSpeaking?: boolean;
-  onVoiceOutputToggle?: (next?: boolean) => void;
+  onVoiceOutputToggle?: () => void;
   onVoiceOutputStop?: () => void;
   /** Reads the newest assistant reply aloud right now (and enables output). */
   onVoiceOutputSpeakLatest?: () => void;
   /** Whether replies are automatically spoken (hands-free needs this on). */
   voiceOutputAutoSpeak?: boolean;
   /** Turns auto-speak on/off, owned by AppShell so Settings stays in sync. */
-  onVoiceOutputAutoSpeakToggle?: (next?: boolean) => void;
+  onVoiceOutputAutoSpeakToggle?: (next: boolean) => void;
   /** Speech-recognition language, owned by AppShell so Settings stays in sync. */
   voiceInputLocale?: VoiceLocale;
   onVoiceInputLocaleChange?: (locale: VoiceLocale) => void;
@@ -148,11 +148,6 @@ const TOOL_PRESET_MAP: Record<ToolPresetLabel, ToolPreset> = {
   full: "full",
 };
 const COMPOSITION_END_ENTER_GRACE_MS = 100;
-// After a hands-free auto-send, the speech engine can re-deliver the same final
-// transcript (our buffer was reset, its own result list was not). Ignore an
-// identical utterance that arrives within this window so it is neither retyped
-// into the composer nor sent a second time.
-const VOICE_HANDS_FREE_DUPLICATE_MS = 5000;
 const TEXT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const ANCHORED_MENU_GAP = 8;
 
@@ -606,7 +601,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onBuiltinCommand,
   soundEnabled, onSoundToggle, onAudioUnlock,
   voiceOutputEnabled, voiceOutputSupported, voiceOutputSpeaking, onVoiceOutputToggle, onVoiceOutputStop, onVoiceOutputSpeakLatest,
-  onVoiceOutputAutoSpeakToggle,
+  voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle,
   voiceInputLocale, onVoiceInputLocaleChange, getCurrentSpeechText,
   onPromptWithStreamingBehavior,
   draftKey,
@@ -699,8 +694,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const manualMicStopRef = useRef(false);
   const lastVoiceActivityRef = useRef(0);
   const lastDictationRef = useRef("");
-  // Last hands-free utterance that was auto-sent, normalized for comparison.
-  const lastSentVoiceRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
   const lastBargeInRef = useRef(0);
   const autoSendRef = useRef<() => void>(() => {});
   const getCurrentSpeechTextRef = useRef(getCurrentSpeechText);
@@ -710,14 +703,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSteerRef.current = onSteer;
 
   const applyVoiceTranscript = useCallback((transcript: string) => {
-    // The recognition engine can re-deliver the final result we just sent: the
-    // silence auto-send clears our buffer but not the engine's own result list.
-    // Dropping that repeat stops the same utterance being typed and sent again.
-    if (handsFreeRef.current) {
-      const normalized = normalizeForEcho(transcript);
-      const lastSent = lastSentVoiceRef.current;
-      if (normalized && normalized === lastSent.text && Date.now() - lastSent.at < VOICE_HANDS_FREE_DUPLICATE_MS) return;
-    }
     if (handsFreeRef.current && speakingRef.current) {
       // Microphone stays open while the assistant speaks: drop its own voice
       // (echo), and barge in on real user speech.
@@ -793,9 +778,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [voiceInputMenuOpen]);
 
   const handleVoiceToggle = useCallback(() => {
-    // A click is a user gesture: unlock shared audio so TTS is not blocked by
-    // the browser autoplay policy when a reply is read later.
-    onAudioUnlock?.(true);
     // Barge-in: while the reply is being spoken, a mic click interrupts it and
     // the hands-free resume effect restarts listening.
     if (voiceOutputSpeaking) {
@@ -816,12 +798,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const caret = ta?.selectionStart ?? current.length;
     voiceBaseRef.current = { before: current.slice(0, caret), after: current.slice(caret) };
     toggleVoiceInput();
-  }, [stopVoiceInput, toggleVoiceInput, voiceListening, voiceOutputSpeaking, onVoiceOutputStop, onAudioUnlock]);
+  }, [stopVoiceInput, toggleVoiceInput, voiceListening, voiceOutputSpeaking, onVoiceOutputStop]);
 
   const handleHandsFreeToggle = useCallback(() => {
-    // This click is the user gesture that lets the shared AudioContext resume,
-    // so neural TTS is audible instead of blocked by the autoplay policy.
-    onAudioUnlock?.(true);
     if (handsFreeRef.current) {
       handsFreeStartedRef.current = false;
       setHandsFree(false);
@@ -829,26 +808,21 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       stopVoiceInput();
       voiceBaseRef.current = null;
       lastDictationRef.current = "";
-      // Leaving hands-free returns to the silent defaults: replies are only
-      // read aloud again if the user turns auto-speak back on in settings.
-      onVoiceOutputAutoSpeakToggle?.(false);
       return;
     }
     handsFreeStartedRef.current = true;
     manualMicStopRef.current = false;
     setHandsFree(true);
     try { window.localStorage.setItem(VOICE_HANDS_FREE_KEY, "true"); } catch { /* best-effort */ }
-    // Hands-free is the one mode that reads replies back: turn voice output on
-    // (if it is off) and auto-speak on. Leaving hands-free turns auto-speak off.
-    if (!voiceOutputEnabled) onVoiceOutputToggle?.(true);
-    onVoiceOutputAutoSpeakToggle?.(true);
+    // The loop is only complete when replies are spoken back.
+    if (voiceOutputAutoSpeak === false && onVoiceOutputAutoSpeakToggle) onVoiceOutputAutoSpeakToggle(true);
     setVoiceError(null);
     const ta = textareaRef.current;
     const current = ta ? ta.value : valueRef.current;
     const caret = ta?.selectionStart ?? current.length;
     voiceBaseRef.current = { before: current.slice(0, caret), after: current.slice(caret) };
     startVoiceInput();
-  }, [stopVoiceInput, startVoiceInput, voiceOutputEnabled, onVoiceOutputToggle, onVoiceOutputAutoSpeakToggle, onAudioUnlock]);
+  }, [stopVoiceInput, startVoiceInput, voiceOutputAutoSpeak, onVoiceOutputAutoSpeakToggle]);
 
   // Hands-free keeps the microphone open at all times (streaming and playback
   // alike); speech during playback is filtered for echo in the transcript
@@ -884,7 +858,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       lastDictationRef.current = "";
       lastVoiceActivityRef.current = 0;
       resetVoiceInput();
-      lastSentVoiceRef.current = { text: normalizeForEcho(text), at: Date.now() };
       if (isStreamingRef.current) {
         // The agent is still working: insert the user's words as steering.
         if (onSteerRef.current) {
@@ -3145,7 +3118,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 type="button"
                 onClick={() => {
                   if (voiceOutputSpeaking) { onVoiceOutputStop?.(); return; }
-                  onAudioUnlock?.(true);
                   // A click always acts immediately: enable output and read the
                   // newest reply, rather than only flipping a switch that waits
                   // for the next turn (which made it look unresponsive).

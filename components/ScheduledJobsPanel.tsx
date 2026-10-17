@@ -240,6 +240,28 @@ export function ScheduledJobsPanel({ cwd, onClose, onOpenSession }: Props) {
     [jobs, selectedId],
   );
 
+  // Keep the stored model selectable even when the current catalogue does not
+  // list it (different cwd, provider currently unauthenticated). Otherwise the
+  // native <select> would silently render the first option while the job still
+  // stores another model — the mismatch this panel must not show.
+  const modelOptions = useMemo(() => {
+    const list = models.map((model) => ({
+      value: `${model.provider}\u0000${model.id}`,
+      label: `${model.name || model.id} · ${model.provider}`,
+    }));
+    const key = draft?.modelKey;
+    if (key && !list.some((option) => option.value === key)) {
+      const parsed = modelFromKey(key);
+      if (parsed) {
+        list.unshift({
+          value: key,
+          label: `${parsed.modelId} · ${parsed.provider} (${t("jobs.modelUnlisted")})`,
+        });
+      }
+    }
+    return list;
+  }, [models, draft?.modelKey, t]);
+
   const selectJob = (job: ScheduledJobWithRuns) => {
     setSelectedId(job.id);
     setDraft(draftForJob(job));
@@ -346,6 +368,14 @@ export function ScheduledJobsPanel({ cwd, onClose, onOpenSession }: Props) {
         : [...current.weekdays, day].sort((a, b) => a - b);
       return { ...current, weekdays };
     });
+  };
+
+  // A run whose model differs from the job's configured model means the runner
+  // fell back to another provider. Surface it instead of hiding the swap.
+  const isFallbackModel = (run: JobRun): boolean => {
+    const configured = selectedJob?.model;
+    if (!configured || !run.model) return false;
+    return run.model.provider !== configured.provider || run.model.modelId !== configured.modelId;
   };
 
   const statusLabel = (status: JobRun["status"] | null): string => {
@@ -560,9 +590,9 @@ export function ScheduledJobsPanel({ cwd, onClose, onOpenSession }: Props) {
                   onChange={(event) => setDraft({ ...draft, modelKey: event.target.value })}
                 >
                   <option value="">{t("jobs.modelDefault")}</option>
-                  {models.map((model) => (
-                    <option key={`${model.provider}\u0000${model.id}`} value={`${model.provider}\u0000${model.id}`}>
-                      {model.name || model.id} · {model.provider}
+                  {modelOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
                     </option>
                   ))}
                 </select>
@@ -598,6 +628,19 @@ export function ScheduledJobsPanel({ cwd, onClose, onOpenSession }: Props) {
                               <span className="scheduled-jobs-run-time">
                                 {formatFullDateTime(run.startedAt, locale)}
                               </span>
+                              {run.model && (
+                                <span
+                                  className={`scheduled-jobs-run-model${isFallbackModel(run) ? " is-fallback" : ""}`}
+                                  title={
+                                    isFallbackModel(run)
+                                      ? t("jobs.modelFallback")
+                                      : `${run.model.provider}/${run.model.modelId}`
+                                  }
+                                >
+                                  {isFallbackModel(run) ? "⚠ " : ""}
+                                  {run.model.provider}/{run.model.modelId}
+                                </span>
+                              )}
                               <span className="scheduled-jobs-run-trigger">
                                 {run.trigger === "manual" ? t("jobs.trigger.manual") : t("jobs.trigger.schedule")}
                               </span>

@@ -140,6 +140,26 @@
   letter-spacing: 0.04em;
 }
 
+.scheduled-jobs-run-model {
+  flex-shrink: 0;
+  max-width: 220px;
+  overflow: hidden;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-jobs-run-model.is-fallback {
+  border-color: color-mix(in srgb, #d97706 55%, var(--border));
+  background: color-mix(in srgb, #d97706 10%, transparent);
+  color: #d97706;
+}
+
 .scheduled-jobs-run-body {
   display: flex;
   flex-direction: column;

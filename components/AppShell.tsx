@@ -11,7 +11,9 @@ import { TabBar, type Tab } from "./TabBar";
 import { openFileTab, saveFileViewerState } from "./file-tab-state";
 import { SettingsPanel, SettingsSectionIcon } from "./SettingsPanel";
 import { ScheduledJobsPanel } from "./ScheduledJobsPanel";
+import { DotsPanel } from "./DotsPanel";
 import { UsageStatsPanel } from "./UsageStatsPanel";
+import { LlmProbePanel } from "./LlmProbePanel";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
 import { SystemPromptPanel } from "./SystemPromptPanel";
@@ -198,7 +200,9 @@ export function AppShell() {
   const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [scheduledJobsOpen, setScheduledJobsOpen] = useState(false);
+  const [dotsOpen, setDotsOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
+  const [llmProbeOpen, setLlmProbeOpen] = useState(false);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [projectTrust, setProjectTrust] = useState<ProjectTrustStatus | null>(null);
   const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
@@ -1251,6 +1255,31 @@ export function AppShell() {
           type="button"
           onClick={() => {
             setSettingsSection(null);
+            setDotsOpen(true);
+          }}
+          title={translate("dots.title")}
+          aria-label={translate("dots.title")}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%",
+            height: 34, padding: "0 10px", background: "none",
+            border: "none", borderRadius: 9, color: "var(--text-muted)",
+            cursor: "pointer", fontSize: 12, transition: "background 0.12s, color 0.12s",
+          }}
+          onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; event.currentTarget.style.color = "var(--text)"; }}
+          onMouseLeave={(event) => { event.currentTarget.style.background = "none"; event.currentTarget.style.color = "var(--text-muted)"; }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="5" cy="12" r="2.5" />
+            <circle cx="19" cy="5" r="2.5" />
+            <circle cx="19" cy="19" r="2.5" />
+            <path d="M7.5 12h9M17 7l-8 3.7M17 17l-8-3.7" />
+          </svg>
+          <span>{translate("dots.title")}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setSettingsSection(null);
             setUsageOpen(true);
           }}
           title={translate("usage.title")}
@@ -1268,6 +1297,28 @@ export function AppShell() {
             <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
           </svg>
           <span>{translate("usage.title")}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setSettingsSection(null);
+            setLlmProbeOpen(true);
+          }}
+          title={translate("llmProbe.title")}
+          aria-label={translate("llmProbe.title")}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%",
+            height: 34, padding: "0 10px", background: "none",
+            border: "none", borderRadius: 9, color: "var(--text-muted)",
+            cursor: "pointer", fontSize: 12, transition: "background 0.12s, color 0.12s",
+          }}
+          onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; event.currentTarget.style.color = "var(--text)"; }}
+          onMouseLeave={(event) => { event.currentTarget.style.background = "none"; event.currentTarget.style.color = "var(--text-muted)"; }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 12h4l2 5 4-13 2 8h6" />
+          </svg>
+          <span>{translate("llmProbe.title")}</span>
         </button>
       </div>
       <div style={{ padding: "8px", flexShrink: 0, display: "flex", justifyContent: "space-between", gap: 4 }}>
@@ -2612,7 +2663,9 @@ export function AppShell() {
         }}
       />
     )}
+    {dotsOpen && <DotsPanel onClose={() => setDotsOpen(false)} />}
     {usageOpen && <UsageStatsPanel onClose={() => setUsageOpen(false)} />}
+    {llmProbeOpen && <LlmProbePanel onClose={() => setLlmProbeOpen(false)} />}
     {settingsSection && (
       <SettingsPanel
         cwd={projectTrustCwd}
