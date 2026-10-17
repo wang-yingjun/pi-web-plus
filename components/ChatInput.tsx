@@ -747,6 +747,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   const { supported: voiceInputSupported, listening: voiceListening, toggle: toggleVoiceInput, stop: stopVoiceInput, start: startVoiceInput, reset: resetVoiceInput } = useVoiceInput({
     locale: activeVoiceInputLocale,
+    backend: "server",
     onTranscript: applyVoiceTranscript,
     onError: handleVoiceError,
   });

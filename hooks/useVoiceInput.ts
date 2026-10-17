@@ -8,6 +8,7 @@ import {
   readStoredVoiceInputLocale,
   type VoiceLocale,
 } from "@/lib/voice";
+import { useServerVoiceInput } from "./useServerVoiceInput";
 
 // Minimal structural types for the Web Speech API's SpeechRecognition, which
 // TypeScript's DOM lib does not ship by default.
@@ -60,6 +61,8 @@ export interface UseVoiceInputOptions {
    * setting, which is Simplified Chinese out of the box.
    */
   locale?: VoiceLocale;
+  /** Backend: "auto" (prefer server), "server" (only server), "browser" (only browser). */
+  backend?: "auto" | "server" | "browser";
   /** Called with the latest full transcript while the user speaks. */
   onTranscript: (text: string) => void;
   /** Called on a terminal recognition error with a short reason code. */
@@ -79,12 +82,33 @@ export interface UseVoiceInputResult {
 }
 
 /**
+ * Public entry: picks between server whisper ASR (if available) and browser
+ * native SpeechRecognition. The browser hook is always mounted as a fallback.
+ */
+export function useVoiceInput({ locale = readStoredVoiceInputLocale(), backend = "auto", onTranscript, onError }: UseVoiceInputOptions): UseVoiceInputResult {
+  const preferServer = backend === "server" || backend === "auto";
+  const [serverAsrAvailable, setServerAsrAvailable] = useState(preferServer);
+  const useServer = preferServer && serverAsrAvailable;
+  
+  const serverResult = useServerVoiceInput({
+    locale,
+    onTranscript,
+    onError,
+    onAvailability: setServerAsrAvailable,
+  });
+  const browserResult = useVoiceInputBrowser({ locale, onTranscript, onError });
+  
+  const active = useServer ? serverResult : browserResult;
+  return useServer ? { ...active, supported: true } : active;
+}
+
+/**
  * Browser-native speech recognition built on the Web Speech API. The hook owns
  * one SpeechRecognition instance, restarts it across the engine's automatic
  * end events while the user is still "listening", and forwards the composed
  * transcript to the caller.
  */
-export function useVoiceInput({ locale = readStoredVoiceInputLocale(), onTranscript, onError }: UseVoiceInputOptions): UseVoiceInputResult {
+function useVoiceInputBrowser({ locale = readStoredVoiceInputLocale(), onTranscript, onError }: UseVoiceInputOptions): UseVoiceInputResult {
   const supported = typeof window !== "undefined" && getRecognitionConstructor() !== null;
   const [listening, setListening] = useState(false);
   const [interim, setInterim] = useState("");
