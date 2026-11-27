@@ -38,6 +38,7 @@ import { projectTrustReloadOptions } from "./project-trust";
 import { resolveShellTools } from "./powershell-settings";
 import { isBuiltInSubagentsEnabled, readSubagentSettings } from "./subagent-settings";
 import { SubagentQueue } from "./subagent-queue";
+import { approvedSubagentModel, approvedSubagentThinking, assertAuthorizedSession, boundedSubagentTurns, reserveSubagentDispatch, reserveSubagentSlot, type SubagentMode, MAX_CONCURRENT } from "./subagent-policy";
 import { addWorktree, removeWorktree } from "./worktree";
 import { randomUUID } from "node:crypto";
 
@@ -60,6 +61,8 @@ export interface SubagentRuntimeDependencies {
   resolveSessionPath(sessionId: string): Promise<string | null>;
   invalidateSessionList(): void;
   isBuiltInSubagentsEnabled?(): boolean;
+  subagentPolicyPath?: string; // isolated policy for tests
+  taskMode?(sessionId: string): SubagentMode;
 }
 
 export interface SubagentController {
@@ -167,10 +170,40 @@ async function cleanupWorktree(
 export function createSubagentController(
   dependencies: SubagentRuntimeDependencies,
 ): SubagentController {
-  async function start(request: StartSubagentRequest): Promise<SubagentExecution> {
+  const pendingApprovals = new Set<string>();
+  function requireAuthorization(sessionId: string): SubagentMode {
+    if (dependencies.taskMode) {
+      const mode = dependencies.taskMode(sessionId);
+      if (mode === "single") throw new Error("Subagent policy: current task is single-agent");
+      return mode;
+    }
     const enabled = dependencies.isBuiltInSubagentsEnabled ?? isBuiltInSubagentsEnabled;
     if (!enabled()) throw new Error("Pi Web built-in sub-agents are disabled");
+    assertAuthorizedSession(sessionId, dependencies.subagentPolicyPath);
+    return "auto";
+  }
+  async function approveAndReserve(sessionId: string, request: StartSubagentRequest | ResumeSubagentRequest, profile: string, model: string) {
+    const mode = requireAuthorization(sessionId);
+    if (mode === "approval") {
+      if (pendingApprovals.has(sessionId)) throw new Error("Another subagent approval is pending; wait before requesting another");
+      pendingApprovals.add(sessionId);
+      try {
+        const approved = await request.parentContext.ui.confirm(
+          "批准子 Agent 分工？",
+          `角色：${profile}\n模型：${model}\n任务：${request.task}\n每会话最多 4 次派发，最多并发 2 个。`,
+          { timeout: 120_000, signal: request.signal },
+        );
+        if (!approved || request.signal?.aborted) throw new Error("Subagent dispatch not approved");
+      } finally { pendingApprovals.delete(sessionId); }
+      if (requireAuthorization(sessionId) !== mode) throw new Error("Subagent authorization changed");
+    }
+    if (dependencies.taskMode) reserveSubagentSlot(sessionId, dependencies.subagentPolicyPath);
+    else reserveSubagentDispatch(sessionId, dependencies.subagentPolicyPath);
+  }
+
+  async function start(request: StartSubagentRequest): Promise<SubagentExecution> {
     const parentSessionId = request.parentContext.sessionManager.getSessionId();
+    requireAuthorization(parentSessionId);
     const parent = dependencies.getSession(parentSessionId);
     if (!parent?.isAlive()) throw new Error("Parent session is no longer available");
     if (!parent.sessionFile) throw new Error("Parent session must be persisted before starting a subagent");
@@ -179,6 +212,10 @@ export function createSubagentController(
     try {
       const profile = resolveSubagentProfile(parent.cwd, request.profile);
       if (!profile) throw new Error(`Unknown or disabled subagent profile: ${request.profile}`);
+      const modelName = approvedSubagentModel(profile.model, request.model);
+      const thinking = approvedSubagentThinking(profile.thinking, request.thinking);
+      const turnLimit = boundedSubagentTurns(request.maxTurns ?? profile.maxTurns);
+      await approveAndReserve(parentSessionId, request, profile.name, modelName);
 
       const runInBackground = request.runInBackground ?? profile.runInBackground;
       const isolation = profile.isolation === "off" ? undefined : request.isolation ?? profile.isolation;
@@ -187,12 +224,7 @@ export function createSubagentController(
       }
       const childCwd = isolatedWorktree?.path ?? parent.cwd;
       const inheritContext = request.inheritContext ?? profile.inheritContext;
-      const maxTurns = request.maxTurns ?? profile.maxTurns;
-      if (maxTurns !== undefined && (!Number.isFinite(maxTurns) || maxTurns < 0)) {
-        throw new Error("max_turns must be a non-negative number");
-      }
-      const turnLimit = maxTurns && maxTurns > 0 ? Math.floor(maxTurns) : undefined;
-      const thinking = request.thinking ?? profile.thinking ?? parent.inner.agent.state?.thinkingLevel;
+
       if (thinking && !THINKING_LEVELS.has(thinking as ThinkingLevel)) {
         throw new Error(`Invalid subagent thinking level: ${thinking}`);
       }
@@ -280,15 +312,15 @@ export function createSubagentController(
       sessionManager.appendCustomEntry(SUBAGENT_META_TYPE, metadata);
       sessionManager.appendSessionInfo(metadata.description);
 
-      const requestedModel = parseSubagentModel(parentModelRuntime, request.model ?? profile.model);
-      const parentModel = parent.inner.model as ReturnType<ModelRuntime["getModel"]>;
+      const requestedModel = parseSubagentModel(parentModelRuntime, modelName);
+      if (!requestedModel) throw new Error("Subagent policy: approved model unavailable");
       const { session: inner } = await createAgentSessionFromServices({
         services,
         sessionManager,
-        model: requestedModel ?? parentModel,
+        model: requestedModel,
         ...(thinking ? { thinkingLevel: thinking as ThinkingLevel } : {}),
         tools: activeTools,
-        excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES],
+        excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES, "subagent"],
       });
       dependencies.registerSession(inner, {
         ...(promptPlan.exactSystemPrompt !== undefined
@@ -318,10 +350,10 @@ export function createSubagentController(
         ? inner.subscribe((event) => {
             if (event.type !== "turn_end") return;
             turnCount += 1;
-            if (!softLimitReached && turnCount >= turnLimit) {
+            if (!softLimitReached && turnCount >= Math.max(1, turnLimit - 1) && turnCount < turnLimit) {
               softLimitReached = true;
               void inner.steer("You have reached your turn limit. Wrap up immediately and provide your final answer now.");
-            } else if (softLimitReached && turnCount >= turnLimit + 1) {
+            } else if (turnCount >= turnLimit) {
               maxTurnsReached = true;
               void inner.abort();
             }
@@ -362,27 +394,31 @@ export function createSubagentController(
         dependencies.invalidateSessionList();
         let result: SubagentRunInfo;
         try {
+          requireAuthorization(parentSessionId);
+            const actual = inner.model;
+          if (!actual || `${actual.provider}/${actual.id}` !== modelName)
+            throw new Error("Subagent policy: actual model differs from approved model");
           await inner.prompt(delegatedTask, { source: "rpc" });
           const text = inner.getLastAssistantText()?.trim();
           const aborted = stored.abortRequested && !maxTurnsReached;
           const providerError = aborted ? undefined : lastAssistantError(sessionManager);
           result = {
             ...initialRun,
-            status: aborted ? "aborted" : providerError ? "failed" : "completed",
+            status: aborted ? "aborted" : maxTurnsReached || providerError ? "failed" : "completed",
             completedAt: new Date().toISOString(),
             ...(text ? { result: text } : {}),
-            ...(providerError ? { error: providerError } : {}),
+            ...(maxTurnsReached ? { error: "Subagent turn budget exhausted" } : providerError ? { error: providerError } : {}),
           };
         } catch (error) {
           const text = inner.getLastAssistantText()?.trim();
           const aborted = stored.abortRequested || request.signal?.aborted;
           result = {
             ...initialRun,
-            status: aborted ? "aborted" : maxTurnsReached ? "completed" : "failed",
+            status: aborted ? "aborted" : "failed",
             completedAt: new Date().toISOString(),
             ...(text ? { result: text } : {}),
-            ...(!aborted && !maxTurnsReached
-              ? { error: error instanceof Error ? error.message : String(error) }
+            ...(!aborted
+              ? { error: maxTurnsReached ? "Subagent turn budget exhausted" : error instanceof Error ? error.message : String(error) }
               : {}),
           };
         } finally {
@@ -422,7 +458,7 @@ export function createSubagentController(
       };
       const queued = getSubagentQueue().enqueue(
         parentSessionId,
-        readSubagentSettings().maxConcurrent,
+        Math.min(MAX_CONCURRENT, readSubagentSettings().maxConcurrent),
         execute,
         (state) => {
           if (state === "queued") {
@@ -449,9 +485,8 @@ export function createSubagentController(
   }
 
   async function resume(request: ResumeSubagentRequest): Promise<SubagentExecution> {
-    const enabled = dependencies.isBuiltInSubagentsEnabled ?? isBuiltInSubagentsEnabled;
-    if (!enabled()) throw new Error("Pi Web built-in sub-agents are disabled");
     const parentSessionId = request.parentContext.sessionManager.getSessionId();
+    requireAuthorization(parentSessionId);
     const existing = await get(request.sessionId);
     if (!existing) throw new Error(`Subagent not found: ${request.sessionId}`);
     if (existing.parentSessionId !== parentSessionId) throw new Error("Subagent does not belong to this parent session");
@@ -464,6 +499,9 @@ export function createSubagentController(
     if (!wrapper?.isAlive()) wrapper = await dependencies.reopenSession(request.sessionId, sessionPath);
     if (!wrapper.isAlive()) throw new Error("Subagent session is no longer available");
     if (wrapper.isRunning()) throw new Error("Subagent is already running");
+    const resumeModel = wrapper.inner.model;
+    approvedSubagentModel(resumeModel ? `${resumeModel.provider}/${resumeModel.id}` : undefined);
+    await approveAndReserve(parentSessionId, request, existing.profile, `${resumeModel!.provider}/${resumeModel!.id}`);
 
     const runInBackground = request.runInBackground ?? existing.runInBackground;
     const initialRun: SubagentRunInfo = {
@@ -505,7 +543,21 @@ export function createSubagentController(
       request.onUpdate?.(stored.run);
       let result: SubagentRunInfo;
       try {
-        await wrapper!.inner.prompt(request.task, { source: "rpc" });
+        requireAuthorization(parentSessionId);
+        const currentModel = wrapper!.inner.model;
+        approvedSubagentModel(currentModel ? `${currentModel.provider}/${currentModel.id}` : undefined);
+        approvedSubagentThinking(wrapper!.inner.agent?.state?.thinkingLevel);
+        let turns = 0;
+        let exhausted = false;
+        const unsubscribe = wrapper!.inner.subscribe((event) => {
+          if (event.type === "turn_end" && ++turns >= boundedSubagentTurns()) {
+            exhausted = true;
+            void wrapper!.inner.abort();
+          }
+        });
+        try { await wrapper!.inner.prompt(request.task, { source: "rpc" }); }
+        finally { unsubscribe(); }
+        if (exhausted) throw new Error("Subagent turn budget exhausted");
         const text = wrapper!.inner.getLastAssistantText()?.trim();
         const providerError = stored.abortRequested ? undefined : lastAssistantError(manager);
         result = {
@@ -548,7 +600,7 @@ export function createSubagentController(
       dependencies.invalidateSessionList();
       resolveCompletion(result);
     };
-    const queued = getSubagentQueue().enqueue(parentSessionId, readSubagentSettings().maxConcurrent, execute, (state) => {
+    const queued = getSubagentQueue().enqueue(parentSessionId, Math.min(MAX_CONCURRENT, readSubagentSettings().maxConcurrent), execute, (state) => {
       if (state === "queued") manager.appendCustomEntry(SUBAGENT_STATUS_TYPE, { version: 1, status: "queued" });
       stored.run = { ...stored.run, status: state };
       request.onUpdate?.(stored.run);

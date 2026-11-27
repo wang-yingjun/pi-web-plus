@@ -303,5 +303,9 @@ Location: `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`
 --font-mono
 ```
 
+## Feature isolation and Git maintenance
 
-
+- Inspect Git status before editing. Keep independent feature work in a named branch and a separate Git worktree when the existing checkout contains unrelated changes. Do not stage unrelated work or reset a dirty checkout.
+- Keep feature changes, regression tests and short architecture/maintenance notes together. Run focused tests and TypeScript checks before committing. Use explicit file lists when staging.
+- Keep credentials, local runtime settings, authorization state, session logs, build artifacts and personal data out of Git. Push reviewed feature commits only to the intended repository; never force-push, merge to a shared branch, or restart a live service without the relevant authorization.
+- Record branch/commit, test results, deployment status and rollback path at handoff.

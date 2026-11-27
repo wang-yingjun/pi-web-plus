@@ -1555,7 +1555,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, markRunStarted, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel]);
   handleAgentEventRef.current = handleAgentEvent;
 
-  const handleSend = useCallback(async (message: string, images?: AttachedImage[]) => {
+  const handleSend = useCallback(async (message: string, images?: AttachedImage[], subagentMode: "single" | "approval" | "auto" = "single") => {
     const trimmedMessage = message.trim();
     if (!trimmedMessage && !images?.length) return;
     if (agentRunningRef.current || bashRunningRef.current) {
@@ -1624,6 +1624,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await sendAgentCommand(sid, {
           type: "prompt",
           message,
+          subagentMode,
           ...(piImages?.length ? { images: piImages } : {}),
         });
         promoteNewSession(1, message);
@@ -1634,6 +1635,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await sendAgentCommand(session.id, {
           type: "prompt",
           message,
+          subagentMode,
           ...(piImages?.length ? { images: piImages } : {}),
         });
       } else {

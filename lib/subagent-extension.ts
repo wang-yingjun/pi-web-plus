@@ -152,8 +152,8 @@ export function createSubagentExtension(
         description: `Delegate a focused task to a configured subagent. Each subagent runs as a full, inspectable Pi session. Use background mode for independent work and foreground mode when the result is needed immediately.\n\nAvailable agent types:\n${agentTypeDescription(profiles)}`,
         promptSnippet: "Delegate a focused task to an inspectable subagent session",
         promptGuidelines: [
-          "Use Agent for a focused task that benefits from an isolated context.",
-          "Use multiple background Agent calls in the same response for independent parallel work.",
+          "Default to one agent. Use Agent only when the user has explicitly authorized the session and the work has a clear, independent deliverable.",
+          "Do not delegate merely because a task is complex; avoid unnecessary parallelism and never request a parent or premium model.",
           "Do not duplicate work already delegated to a running subagent.",
         ],
         executionMode: "parallel",

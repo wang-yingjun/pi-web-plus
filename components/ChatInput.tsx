@@ -56,7 +56,7 @@ export interface AttachedImage {
 }
 
 interface Props {
-  onSend: (message: string, images?: AttachedImage[]) => void;
+  onSend: (message: string, images?: AttachedImage[], subagentMode?: "single" | "approval" | "auto") => void;
   onAbort: () => void;
   onSteer?: (message: string, images?: AttachedImage[]) => void;
   onFollowUp?: (message: string, images?: AttachedImage[]) => void;
@@ -611,6 +611,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { t } = useI18n();
   const { fontSize } = useChatAppearance();
   const isMobile = useIsMobile();
+  const [subagentMode, setSubagentMode] = useState<"single" | "approval" | "auto">("single");
+  useEffect(() => { setSubagentMode("single"); }, [draftKey]);
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
   // Voice input has no separate on/off setting: the microphone button is the
   // control, and it only renders when the browser supports recognition.
@@ -1223,8 +1225,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (builtinAllowed && await runBuiltinCommand(msg)) return;
     if (isStreaming) return;
     clearInput();
-    onSend(msg, attachedImages.length ? attachedImages : undefined);
-  }, [value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+    onSend(msg, attachedImages.length ? attachedImages : undefined, compact ? "single" : subagentMode);
+    setSubagentMode("single");
+  }, [value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock, compact, subagentMode]);
   autoSendRef.current = handleSend;
 
   const slashQuery = !compact && value.startsWith("/") && !/\s/.test(value.slice(1))
@@ -2819,6 +2822,20 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 backdropFilter: "blur(10px)",
               } : null),
             }}>
+            {!compact && onThinkingLevelChange && (
+              <select
+                aria-label="Agent 执行模式"
+                title="仅本次任务生效；默认单 Agent。多 Agent 最多 4 次派发、并发 2 个，禁止继承主模型。"
+                value={subagentMode}
+                disabled={isStreaming}
+                onChange={e => setSubagentMode(e.target.value as "single" | "approval" | "auto")}
+                style={{ maxWidth: 128, fontSize: 12, height: 30, border: "1px solid var(--border)", borderRadius: 7, background: "var(--bg-panel)", color: "var(--text)", padding: "0 5px" }}
+              >
+                <option value="single">单 Agent</option>
+                <option value="approval">多 Agent · 审批</option>
+                <option value="auto">多 Agent · 自主</option>
+              </select>
+            )}
             {onThinkingLevelChange && (
               <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
                 <button

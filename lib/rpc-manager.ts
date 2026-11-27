@@ -40,6 +40,12 @@ import {
 } from "./subagents";
 import { createSubagentController } from "./subagent-runtime";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
+import { getTaskSubagentMode, parseSubagentMode, setTaskSubagentMode, type SubagentMode } from "./subagent-policy";
+
+const controlledSubagentTools = new Set<string>([...SUBAGENT_CONTROL_TOOL_NAMES, "subagent"]);
+function taskToolSelection(names: string[], mode: SubagentMode): string[] {
+  return names.filter(name => !controlledSubagentTools.has(name) || (mode !== "single" && name !== "subagent"));
+}
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import { expandChainedCommands } from "./chained-commands";
@@ -454,7 +460,7 @@ export class AgentSessionWrapper {
   }
 
   setActiveToolSelection(toolNames: string[]): void {
-    this.inner.setActiveToolsByName(withExtensionTools(this.inner, toolNames));
+    this.inner.setActiveToolsByName(taskToolSelection(withExtensionTools(this.inner, toolNames), getTaskSubagentMode(this.sessionId)));
   }
 
   private emit(event: AgentEvent): void {
@@ -603,6 +609,18 @@ export class AgentSessionWrapper {
           if (this.extensionUiAbortController.signal.aborted) {
             this.extensionUiAbortController = new AbortController();
           }
+          const mode = parseSubagentMode(command.subagentMode);
+          const independent = !this.isRunning();
+          if (!independent && mode !== "single") throw new Error("Cannot grant subagent permission during an active task");
+          if (independent) {
+            const active = this.inner.getActiveToolNames?.() ?? [];
+            if (mode !== "single" && (this.isChatOnly() || !active.length || !this.inner.getAllTools().some(t => t.name === "Agent"))) {
+              throw new Error("Subagents are unavailable in this session; reload or enable normal tools");
+            }
+            const allowed = mode === "single" ? active : [...new Set([...active, ...SUBAGENT_CONTROL_TOOL_NAMES])];
+            this.inner.setActiveToolsByName?.(taskToolSelection(allowed, mode));
+            setTaskSubagentMode(this.sessionId, mode);
+          }
           const promptImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
           const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
           let preflightAccepted = false;
@@ -628,6 +646,11 @@ export class AgentSessionWrapper {
             if (promptSettled) return;
             promptSettled = true;
             this.pendingPromptCount = Math.max(0, this.pendingPromptCount - 1);
+            if (independent) {
+              setTaskSubagentMode(this.sessionId, "single");
+              const active = this.inner.getActiveToolNames?.() ?? [];
+              this.inner.setActiveToolsByName?.(taskToolSelection(active, "single"));
+            }
             this.resetIdleTimer();
             this.notifyAgentRunCompleteIfIdle();
           };
@@ -1718,7 +1741,7 @@ function registerRpcWrapper(wrapper: AgentSessionWrapper): void {
   const registry = getRegistry();
   const sessionId = wrapper.sessionId;
   if (wrapper.sessionFile) cacheSessionPath(sessionId, wrapper.sessionFile);
-  wrapper.onDestroy(() => registry.delete(sessionId));
+  wrapper.onDestroy(() => { setTaskSubagentMode(sessionId, "single"); registry.delete(sessionId); });
   registry.set(sessionId, wrapper);
   wrapper.start();
   if (!wrapper.isChatOnly()) wrapper.beginExtensionBinding();
@@ -1741,6 +1764,7 @@ const SUBAGENT_CONTROLLER = createSubagentController({
   resolveSessionPath,
   invalidateSessionList: invalidateSessionListCache,
   isBuiltInSubagentsEnabled,
+  taskMode: getTaskSubagentMode,
 });
 
 export function getSubagentRun(sessionId: string) {
@@ -2115,7 +2139,7 @@ export async function startRpcSession(
               createSubagentExtension(
                 SUBAGENT_CONTROLLER.extensionRuntime,
                 () => listSubagentProfiles(sessionCwd),
-                isBuiltInSubagentsEnabled,
+                () => true, // register but keep inactive unless the current prompt explicitly grants permission
               ),
             ],
             extensionsOverride: (base) => preferUserBashExtension(preferPiWebSubagentExtension(base)),
@@ -2160,14 +2184,14 @@ export async function startRpcSession(
       ...(initial?.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
       ...(scope.scopedModels.length > 0 ? { scopedModels: [...scope.scopedModels] } : {}),
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
-      ...(subagentResources ? { excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES] } : {}),
+      ...(subagentResources ? { excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES, "subagent"] } : {}),
     });
 
     // If specific tool names were requested (non-empty), set the active tools to the
     // requested builtin coding tools PLUS all extension/package tools, so installed
     // extensions stay usable in Pi Web just like in the `pi` CLI.
     if (!subagentResources && !chatOnly) {
-      inner.setActiveToolsByName(withExtensionTools(inner, selectedToolNames ?? inner.getActiveToolNames()));
+      inner.setActiveToolsByName(taskToolSelection(withExtensionTools(inner, selectedToolNames ?? inner.getActiveToolNames()), "single"));
     }
 
     const exactSystemPrompt = subagentResources?.exactSystemPrompt !== undefined
